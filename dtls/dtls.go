@@ -29,6 +29,10 @@ func NewListener(inner net.PacketConn, config *Config) net.Listener {
 	return l
 }
 
+func (l *listener) Addr() net.Addr {
+	return l.PacketConn.LocalAddr()
+}
+
 func Listener(network, laddr string, config *Config) (net.Listener, error) {
 	if config == nil || (len(config.Certificates) == 0 && config.GetCertificate == nil) {
 		return nil, errors.New("dtls: neither Certificates nor GetCertificate set in Config")

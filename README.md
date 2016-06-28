@@ -10,6 +10,10 @@ There is no working release yet. Stay tuned.
 
 ## Usage
 
+```sh
+go get github.com/pixelbender/go-dtls
+```
+
 ```go
 cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
 if err != nil {
@@ -20,10 +24,8 @@ config := dtls.Config{Certificates: []tls.Certificate{cert}}
 // Client
 
 conn, err := dtls.Dial("udp", "example.com:5000", &config)
-...
 
 // Server
 
 listener, err := dtls.Listen("udp", ":5000", &config)
-...
 ```

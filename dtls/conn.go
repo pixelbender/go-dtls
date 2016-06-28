@@ -12,6 +12,7 @@ type Conn struct {
 	conn              net.Conn
 	isClient          bool
 	handshakeMutex    sync.Mutex
+	handshakeErr      error
 	config            *Config
 	handshakeComplete bool
 	peerCertificates  []*x509.Certificate
@@ -67,6 +68,25 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) Handshake() error {
+	c.handshakeMutex.Lock()
+	defer c.handshakeMutex.Unlock()
+
+	// TODO: check if handshake is complete
+
+	if c.isClient {
+		c.handshakeErr = c.clientHandshake()
+	} else {
+		c.handshakeErr = c.serverHandshake()
+	}
+
+	return ErrNotImplemented
+}
+
+func (c *Conn) serverHandshake() error {
+	return ErrNotImplemented
+}
+
+func (c *Conn) sendAlert(err alert) error {
 	return ErrNotImplemented
 }
 
