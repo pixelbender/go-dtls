@@ -24,6 +24,6 @@ conn, err := dtls.Dial("udp", "example.com:5000", &config)
 
 // Server
 
-listener, err := dtls.ListenPacket("udp", ":5000", &config)
+listener, err := dtls.Listen("udp", ":5000", &config)
 ...
 ```
