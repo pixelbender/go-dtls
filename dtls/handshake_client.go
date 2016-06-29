@@ -66,7 +66,7 @@ NextCipherSuite:
 
 	// TODO: session tickets
 
-	// c.writeRecord(recordTypeHandshake, hello.marshal())
+	c.writeRecord(recordTypeHandshake, hello.marshal())
 
 	// TODO: wait for response
 

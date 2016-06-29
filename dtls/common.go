@@ -20,6 +20,15 @@ const (
 	maxVersion = VersionDTLS12
 )
 
+type recordType uint8
+
+const (
+	recordTypeChangeCipherSpec recordType = 20
+	recordTypeAlert            recordType = 21
+	recordTypeHandshake        recordType = 22
+	recordTypeApplicationData  recordType = 23
+)
+
 // http://www.iana.org/assignments/tls-parameters/tls-parameters.xml#tls-parameters-7
 const (
 	typeHelloRequest       uint8 = 0
