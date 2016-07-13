@@ -1,5 +1,7 @@
 # Golang DTLS Protocol Implementation
 
+[![Join the chat at https://gitter.im/pixelbender/go-dtls](https://badges.gitter.im/pixelbender/go-dtls.svg)](https://gitter.im/pixelbender/go-dtls?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+
 There is no working release yet. Stay tuned.
 
 ## Roadmap
