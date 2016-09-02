@@ -33,7 +33,10 @@ import (
 )
 
 func main() {
-    conn, err := dtls.Dial("udp", "example.com:5000", &tls.Config{})
+    config := &tls.Config{
+        // It's compatible with 'crypto/tls' configuration.
+    }
+    conn, err := dtls.Dial("udp", "example.com:5000", config)
     if err != nil {
         log.Fatal(err)
     }
@@ -66,7 +69,7 @@ func main() {
     }
     defer l.Close()
     for {
-        // Use l as net.Listener since DTLS is connection-oriented protocol
+        // Use l as net.Listener since DTLS is connection-oriented protocol.
         conn, err := l.Accept()
         if err != nil {
             log.Fatal(err)

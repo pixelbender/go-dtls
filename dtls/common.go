@@ -7,6 +7,10 @@ const (
 	VersionDTLS12 = 0xfefd
 )
 
+type Config struct {
+	tls.Config
+}
+
 var emptyConfig = &tls.Config{
 	MinVersion: VersionDTLS10,
 	MaxVersion: VersionDTLS12,

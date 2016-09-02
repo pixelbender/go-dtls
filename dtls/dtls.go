@@ -123,27 +123,19 @@ func DialWithDialer(dialer *net.Dialer, network, addr string, config *tls.Config
 		c.ServerName = hostname
 		config = &c
 	}
-
 	conn := Client(rawConn, config)
-
 	if timeout == 0 {
 		err = conn.Handshake()
 	} else {
 		go func() {
 			errChannel <- conn.Handshake()
 		}()
-
 		err = <-errChannel
 	}
-
 	if err != nil {
 		rawConn.Close()
 		return nil, err
 	}
-
 	return conn, nil
 }
-
-
-
 
