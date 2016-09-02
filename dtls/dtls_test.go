@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"crypto/tls"
 )
 
 func TestDTLSv1ClientHandshakeWithOpenSSL(t *testing.T) {
@@ -34,7 +35,7 @@ func TestDTLSv1ClientHandshakeWithOpenSSL(t *testing.T) {
 	}()
 
 	go func() {
-		conn, err := Dial("udp", "127.0.0.1:30000", &Config{InsecureSkipVerify: true})
+		conn, err := Dial("udp", "127.0.0.1:30000", &tls.Config{InsecureSkipVerify: true})
 		if err != nil {
 			t.Fatalf("dial error %v", err)
 		}
