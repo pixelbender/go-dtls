@@ -1,19 +1,19 @@
-# Golang implementation of DTLS Protocol
+# Golang: DTLS Protocol
 
 [![Build Status](https://travis-ci.org/pixelbender/go-dtls.svg)](https://travis-ci.org/pixelbender/go-dtls)
 [![Coverage Status](https://coveralls.io/repos/github/pixelbender/go-dtls/badge.svg?branch=master)](https://coveralls.io/github/pixelbender/go-dtls?branch=master)
 [![Go Report Card](https://goreportcard.com/badge/github.com/pixelbender/go-dtls)](https://goreportcard.com/report/github.com/pixelbender/go-dtls)
 [![GoDoc](https://godoc.org/github.com/pixelbender/go-dtls?status.svg)](https://godoc.org/github.com/pixelbender/go-dtls)
 
-Work in progress...
+Work in progress, stay tuned...
 
 ## Features
 
 - [ ] Client handshake
 - [ ] Server handshake
 - [ ] Retransmission
-- [ ] PMTU Discovery
 - [ ] ...
+- [ ] Session Tickets
 
 ## Installation
 
@@ -28,15 +28,11 @@ package main
 
 import (
     "github.com/pixelbender/go-dtls/dtls"
-    "crypto/tls"
     "log"
 )
 
 func main() {
-    config := &tls.Config{
-        // It's compatible with 'crypto/tls' configuration.
-    }
-    conn, err := dtls.Dial("udp", "example.com:5000", config)
+    conn, err := dtls.Dial("udp", "example.com:5000", nil)
     if err != nil {
         log.Fatal(err)
     }
@@ -61,7 +57,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    config := &tls.Config{Certificates: []tls.Certificate{cert}}
+    config := &dtls.Config{Certificates: []tls.Certificate{cert}}
     
     l, err := dtls.Listen("udp", ":5000", config)
     if err != nil {
