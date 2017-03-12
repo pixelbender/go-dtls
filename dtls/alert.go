@@ -1,82 +1,61 @@
 package dtls
 
-import "strconv"
+import (
+	"errors"
+)
+
+var (
+	errAlertFormat = errors.New("dtls: alert format error")
+)
 
 type alert uint8
 
-// http://www.iana.org/assignments/tls-parameters/tls-parameters.xml#tls-parameters-6
 const (
-	alertCloseNotify                  alert = 0
-	alertUnexpectedMessage            alert = 10
-	alertBadRecordMAC                 alert = 20
-	alertDecryptionFailed             alert = 21
-	alertRecordOverflow               alert = 22
-	alertDecompressionFailure         alert = 30
-	alertHandshakeFailure             alert = 40
-	alertBadCertificate               alert = 42
-	alertUnsupportedCertificate       alert = 43
-	alertCertificateRevoked           alert = 44
-	alertCertificateExpired           alert = 45
-	alertCertificateUnknown           alert = 46
-	alertIllegalParameter             alert = 47
-	alertUnknownCA                    alert = 48
-	alertAccessDenied                 alert = 49
-	alertDecodeError                  alert = 50
-	alertDecryptError                 alert = 51
-	alertProtocolVersion              alert = 70
-	alertInsufficientSecurity         alert = 71
-	alertInternalError                alert = 80
-	alertInappropriateFallback        alert = 86
-	alertUserCanceled                 alert = 90
-	alertNoRenegotiation              alert = 100
-	alertUnsupportedExtension         alert = 110
-	alertCertificateUnobtainable      alert = 111
-	alertUnrecognizedName             alert = 112
-	alertBadCertificateStatusResponse alert = 113
-	alertBadCertificateHashValue      alert = 114
-	alertUnknownPSKIdentity           alert = 115
+	alertLevelWarning = 1
+	alertLevelError   = 2
 )
 
-var alertText = map[alert]string{
-	alertCloseNotify:                  "close notify",
-	alertUnexpectedMessage:            "unexpected message",
-	alertBadRecordMAC:                 "bad record MAC",
-	alertDecryptionFailed:             "decryption failed",
-	alertRecordOverflow:               "record overflow",
-	alertDecompressionFailure:         "decompression failure",
-	alertHandshakeFailure:             "handshake failure",
-	alertBadCertificate:               "bad certificate",
-	alertUnsupportedCertificate:       "unsupported certificate",
-	alertCertificateRevoked:           "revoked certificate",
-	alertCertificateExpired:           "expired certificate",
-	alertCertificateUnknown:           "unknown certificate",
-	alertIllegalParameter:             "illegal parameter",
-	alertUnknownCA:                    "unknown certificate authority",
-	alertAccessDenied:                 "access denied",
-	alertDecodeError:                  "error decoding message",
-	alertDecryptError:                 "error decrypting message",
-	alertProtocolVersion:              "protocol version not supported",
-	alertInsufficientSecurity:         "insufficient security level",
-	alertInternalError:                "internal error",
-	alertInappropriateFallback:        "inappropriate fallback",
-	alertUserCanceled:                 "user canceled",
-	alertNoRenegotiation:              "no renegotiation",
-	alertUnsupportedExtension:         "unsupported extension",
-	alertCertificateUnobtainable:      "certificate unobtainable",
-	alertUnrecognizedName:             "unrecognized name",
-	alertBadCertificateStatusResponse: "bad certificate status response",
-	alertBadCertificateHashValue:      "bad certificate hash value",
-	alertUnknownPSKIdentity:           "unknown PSK identity",
+const (
+	alertCloseNotify            alert = 0
+	alertUnexpectedMessage      alert = 10
+	alertBadRecordMAC           alert = 20
+	alertDecryptionFailed       alert = 21
+	alertRecordOverflow         alert = 22
+	alertDecompressionFailure   alert = 30
+	alertHandshakeFailure       alert = 40
+	alertBadCertificate         alert = 42
+	alertUnsupportedCertificate alert = 43
+	alertCertificateRevoked     alert = 44
+	alertCertificateExpired     alert = 45
+	alertCertificateUnknown     alert = 46
+	alertIllegalParameter       alert = 47
+	alertUnknownCA              alert = 48
+	alertAccessDenied           alert = 49
+	alertDecodeError            alert = 50
+	alertDecryptError           alert = 51
+	alertProtocolVersion        alert = 70
+	alertInsufficientSecurity   alert = 71
+	alertInternalError          alert = 80
+	alertUserCanceled           alert = 90
+	alertNoRenegotiation        alert = 100
+	alertUnsupportedExtension   alert = 110
+)
+
+/*
+func (a *alert) Error() string {
+	return fmt.Sprintf("dtls: alert %x", a.typ)
 }
 
-func (e alert) String() string {
-	s, ok := alertText[e]
-	if ok {
-		return "dtls: " + s
+func parseAlert(b []byte) (*alert, error) {
+	if len(b) < 2 {
+		return nil, errHandshakeFormat
 	}
-	return "dtls: alert(" + strconv.Itoa(int(e)) + ")"
+	_ = b[1]
+	return &alert{b[0],b[1]}
 }
 
-func (e alert) Error() string {
-	return e.String()
-}
+func (a *alert) marshal(b []byte) []byte {
+	var v []byte
+	v, b = grow(b, 2)
+	_ = v[8]
+*/

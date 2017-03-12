@@ -1,219 +1,285 @@
 package dtls
 
 import (
-	"io"
+	"errors"
+)
+
+var (
+	errHandshakeFormat   = errors.New("dtls: handshake format error")
+	errHandshakeSequence = errors.New("dtls: handshake sequence error")
+	errServerKeyExchange = errors.New("dtls: server key exchange format error")
 )
 
 const (
-	typeHelloRequest       uint8 = 0
-	typeClientHello        uint8 = 1
-	typeServerHello        uint8 = 2
-	typeHelloVerifyRequest uint8 = 3
-	typeNewSessionTicket   uint8 = 4
-	typeCertificate        uint8 = 11
-	typeServerKeyExchange  uint8 = 12
-	typeCertificateRequest uint8 = 13
-	typeServerHelloDone    uint8 = 14
-	typeCertificateVerify  uint8 = 15
-	typeClientKeyExchange  uint8 = 16
-	typeFinished           uint8 = 20
-	typeCertificateStatus  uint8 = 22
+	handshakeClientHello        uint8 = 1
+	handshakeServerHello        uint8 = 2
+	handshakeHelloVerifyRequest uint8 = 3
+	handshakeCertificate        uint8 = 11
+	handshakeServerKeyExchange  uint8 = 12
+	handshakeCertificateRequest uint8 = 13
+	handshakeServerHelloDone    uint8 = 14
+	handshakeCertificateVerify  uint8 = 15
+	handshakeClientKeyExchange  uint8 = 16
+	handshakeFinished           uint8 = 20
 )
 
-type handshakeMsg interface {
-	Marshal(w writer)
-	Unmarshal(r reader) error
+const (
+	compNone uint8 = 0
+)
+
+type marshaler interface {
+	marshal([]byte) []byte
 }
 
-func newMessage(typ uint8) handshakeMsg {
-	switch typ {
-	case typeClientHello:
-		return new(clientHello)
-	case typeServerHello:
-		return new(serverHello)
-	case typeCertificate:
-		return new(certificate)
+type handshake struct {
+	typ     uint8
+	len     int
+	seq     int
+	off     int
+	raw     []byte
+	message marshaler
+}
+
+func parseHandshake(b []byte) (*handshake, error) {
+	if len(b) < 12 {
+		return nil, errHandshakeFormat
 	}
-	return nil
+	_ = b[8]
+	h := &handshake{
+		typ: b[0],
+		len: int(b[1])<<16 | int(b[2])<<8 | int(b[3]),
+		seq: int(b[4])<<8 | int(b[5]),
+		off: int(b[6])<<16 | int(b[7])<<8 | int(b[8]),
+	}
+	if h.raw, _ = split3(b[9:]); h.raw == nil {
+		return nil, errHandshakeFormat
+	}
+	return h, nil
+}
+
+func (h *handshake) marshal(b []byte) []byte {
+	var v []byte
+	v, b = grow(b, 9)
+	_ = v[8]
+	v[0] = h.typ
+	v[1], v[2], v[3] = uint8(h.len>>16), uint8(h.len>>8), uint8(h.len)
+	v[4], v[5] = uint8(h.seq>>8), uint8(h.seq)
+	v[6], v[7], v[8] = uint8(h.off>>16), uint8(h.off>>8), uint8(h.off)
+	return pack3(b, h.raw, h.message)
 }
 
 type clientHello struct {
-	Version            uint16
-	Random             io.Reader
-	RandomBytes        []uint8
-	Session            []uint8
-	Cookie             []uint8
-	CipherSuites       []uint16
-	CompressionMethods []uint8
-	Extensions         map[uint16]Extension
+	ver          uint16
+	random       []byte
+	sessionID    []byte
+	cookie       []byte
+	cipherSuites []uint16
+	compMethods  []uint8
+	raw          []byte
+	*extensions
 }
 
-func (m *clientHello) Marshal(w writer) {
-	b := w.Next(34)
-	be.PutUint16(b, m.Version)
-	if m.RandomBytes != nil {
-		copy(b[2:], m.RandomBytes)
-	} else {
-		m.RandomBytes = b[2:]
-		m.Random.Read(m.RandomBytes)
+func parseClientHello(b []byte) (*clientHello, error) {
+	if len(b) < 34 {
+		return nil, errHandshakeFormat
 	}
-	putSlice8(w, m.Session)
-	putSlice8(w, m.Cookie)
-	putSlice16(w, m.CipherSuites)
-	putSlice8(w, m.CompressionMethods)
-	putExtensions(w, m.Extensions)
+	_ = b[33]
+	h := &clientHello{
+		ver:    uint16(b[0])<<8 | uint16(b[1]),
+		random: b[2:34],
+	}
+	var v []byte
+	if h.sessionID, b = split(b[34:]); b == nil {
+		return nil, errHandshakeFormat
+	}
+	if h.cookie, b = split(b); b == nil {
+		return nil, errHandshakeFormat
+	}
+	if v, b = split2(b); b == nil {
+		return nil, errHandshakeFormat
+	}
+	h.cipherSuites = make([]uint16, len(v)>>1)
+	for i := range h.cipherSuites {
+		_ = v[1]
+		h.cipherSuites[i], v = uint16(v[0])<<8|uint16(v[1]), v[2:]
+	}
+	if h.compMethods, b = split(b); b == nil {
+		return nil, errHandshakeFormat
+	}
+	if h.raw, b = split2(b); b == nil {
+		return nil, errHandshakeFormat
+	}
+	return h, nil
 }
 
-func (m *clientHello) Unmarshal(r reader) (err error) {
-	var b []byte
-	b, err = r.Next(34)
-	if err == nil {
-		m.Version = be.Uint16(b)
-		m.RandomBytes = b[2:34]
-		m.Session, err = getSlice8(r)
+func (h *clientHello) marshal(b []byte) []byte {
+	var v []byte
+	v, b = grow(b, 34)
+	_ = v[33]
+	v[0], v[1] = uint8(h.ver>>8), uint8(h.ver)
+	copy(v[2:], h.random)
+	b = pack(b, h.sessionID, nil)
+	b = pack(b, h.cookie, nil)
+	n := len(h.cipherSuites) << 1
+	v, b = grow(b, 2+n)
+	_ = v[1]
+	v[0], v[1], v = uint8(n>>8), uint8(n), v[2:]
+	for _, s := range h.cipherSuites {
+		_ = v[1]
+		v[0], v[1], v = uint8(s>>8), uint8(s), v[2:]
 	}
-	if err == nil {
-		m.Cookie, err = getSlice8(r)
-	}
-	if err == nil {
-		m.CipherSuites, err = getSlice16(r)
-	}
-	if err == nil {
-		m.CompressionMethods, err = getSlice8(r)
-	}
-	if err == nil && r.Len() > 0 {
-		m.Extensions, err = getExtensions(r)
-	}
-	return
+	b = pack(b, h.compMethods, nil)
+	return pack2(b, h.raw, h.extensions)
 }
 
 type serverHello struct {
-	Version           uint16
-	Random            io.Reader
-	RandomBytes       []uint8
-	Session           []uint8
-	CipherSuite       uint16
-	CompressionMethod uint8
-	Extensions        map[uint16]Extension
+	ver         uint16
+	random      []byte
+	sessionID   []byte
+	cipherSuite uint16
+	compMethod  uint8
+	raw         []byte
+	*extensions
 }
 
-func (m *serverHello) Marshal(w writer) {
-	b := w.Next(34)
-	be.PutUint16(b, m.Version)
-	if m.RandomBytes != nil {
-		copy(b[2:], m.RandomBytes)
-	} else {
-		m.RandomBytes = b[2:]
-		m.Random.Read(m.RandomBytes)
+func parseServerHello(b []byte) (*serverHello, error) {
+	if len(b) < 34 {
+		return nil, errHandshakeFormat
 	}
-	putSlice8(w, m.Session)
-	b = w.Next(3)
-	be.PutUint16(b, m.CipherSuite)
-	b[2] = m.CompressionMethod
-	putExtensions(w, m.Extensions)
+	_ = b[33]
+	h := &serverHello{
+		ver:    uint16(b[0])<<8 | uint16(b[1]),
+		random: b[2:34],
+	}
+	if h.sessionID, b = split(b[34:]); b == nil {
+		return nil, errHandshakeFormat
+	}
+	if len(b) < 3 {
+		return nil, errHandshakeFormat
+	}
+	_ = b[2]
+	h.cipherSuite = uint16(b[0])<<8 | uint16(b[1])
+	h.compMethod = b[2]
+	if h.raw, b = split2(b[3:]); b == nil {
+		return nil, errHandshakeFormat
+	}
+	return h, nil
 }
 
-func (m *serverHello) Unmarshal(r reader) (err error) {
-	var b []byte
-	b, err = r.Next(34)
-	if err == nil {
-		m.Version = be.Uint16(b)
-		m.RandomBytes = b[2:34]
-		m.Session, err = getSlice8(r)
+func (h *serverHello) marshal(b []byte) []byte {
+	var v []byte
+	v, b = grow(b, 34)
+	_ = v[33]
+	v[0], v[1] = uint8(h.ver>>8), uint8(h.ver)
+	copy(v[2:], h.random)
+	b = pack(b, h.sessionID, nil)
+	v, b = grow(b, 3)
+	_ = v[2]
+	v[0], v[1] = uint8(h.cipherSuite>>8), uint8(h.cipherSuite)
+	v[2] = h.compMethod
+	return pack2(b, h.raw, h.extensions)
+}
+
+type helloVerifyRequest struct {
+	ver    uint16
+	cookie []byte
+}
+
+func parseHelloVerifyRequest(b []byte) (*helloVerifyRequest, error) {
+	if len(b) < 3 {
+		return nil, errHandshakeFormat
 	}
-	b, err = r.Next(3)
-	if err == nil {
-		m.CipherSuite = be.Uint16(b)
-		m.CompressionMethod = b[2]
-		if r.Len() > 0 {
-			m.Extensions, err = getExtensions(r)
+	_ = b[1]
+	h := &helloVerifyRequest{
+		ver: uint16(b[0])<<8 | uint16(b[1]),
+	}
+	if h.cookie, b = split(b[2:]); b == nil {
+		return nil, errHandshakeFormat
+	}
+	return h, nil
+}
+
+type certificate [][]byte
+
+func parseCertificate(b []byte) (certificate, error) {
+	if b, _ = split3(b); b == nil {
+		return nil, errHandshakeFormat
+	}
+	var v []byte
+	с := make(certificate, 0, 3)
+	for len(b) > 0 {
+		if v, b = split3(b); b == nil {
+			return nil, errHandshakeFormat
 		}
+		с = append(с, v)
 	}
-	return
+	return с, nil
 }
 
-type Extension interface {
-	Bytes() []byte
-}
-
-type rawExtension []byte
-
-func (e rawExtension) Bytes() []byte {
-	return []byte(e)
-}
-
-type certificate struct {
-	Certificates [][]byte
-}
-
-func (c *certificate) Marshal(w writer) {
-	for _, it := range c.Certificates {
-		b := w.Next(3)
-		putInt24(b, len(it))
-		w.Write(it)
+func (c certificate) marshal(b []byte) []byte {
+	p := len(b)
+	_, b = grow(b, 3)
+	for _, v := range c {
+		b = pack3(b, v, nil)
 	}
-}
-
-func (c *certificate) Unmarshal(r reader) (err error) {
-	var b []byte
-	for r.Len() > 3 {
-		if b, err = r.Next(3); err != nil {
-			return
-		}
-		if b, err = r.Next(getInt24(b)); err != nil {
-			return
-		}
-		c.Certificates = append(c.Certificates, b)
-	}
-	return
-}
-
-type signatureAlgorithmsExtension []signatureAlgorithm
-
-func (e signatureAlgorithmsExtension) Bytes() []byte {
-	v := []signatureAlgorithm(e)
-	n := len(v) << 1
-	b := make([]byte, 2+n)
-	be.PutUint16(b, uint16(n))
-	for i, it := range v {
-		b[i<<1] = it.hash
-		b[i<<1+1] = it.sign
-	}
+	n, v := len(b)-p-3, b[p:]
+	_ = v[2]
+	v[0], v[1], v[2] = uint8(n>>16), uint8(n>>8), uint8(n)
 	return b
 }
 
-func groupsExtension(v []uint16) Extension {
-	n := len(v) << 1
-	b := make([]byte, 2+n)
-	be.PutUint16(b, uint16(n))
-	for i, it := range v {
-		be.PutUint16(b[i<<1:], it)
+type serverKeyExchange struct {
+	curve uint16
+	pub   []byte
+	sign  []byte
+}
+
+func parseServerKeyExchange(b []byte) (*serverKeyExchange, error) {
+	if len(b) < 4 {
+		return nil, errServerKeyExchange
 	}
-	return rawExtension(b)
+	_ = b[2]
+	if b[0] != 3 {
+		return nil, errServerKeyExchange
+	}
+	e := &serverKeyExchange{
+		curve: uint16(b[1])<<8 | uint16(b[2]),
+	}
+	if e.pub, b = split(b[3:]); b == nil {
+		return nil, errServerKeyExchange
+	}
+	if e.sign, b = split2(b); b == nil {
+		return nil, errServerKeyExchange
+	}
+	return e, nil
 }
 
-func pointFormatsExtension(v []uint8) Extension {
-	n := len(v)
-	b := make([]byte, 1+n)
-	b[0] = uint8(n)
-	copy(b[1:], v)
-	return rawExtension(b)
+func (e *serverKeyExchange) marshal(b []byte) []byte {
+	var v []byte
+	v, b = grow(b, 3)
+	_ = b[2]
+	v[0], v[1], v[2] = 3, uint8(e.curve>>8), uint8(e.curve)
+	b = pack(b, e.pub, nil)
+	return pack2(b, e.sign, nil)
 }
 
-func serverNamesExtension(v string) Extension {
-	n := len(v)
-	b := make([]byte, 5+n)
-	be.PutUint16(b, uint16(3+n))
-	b[2] = 0
-	be.PutUint16(b[3:], uint16(n))
-	copy(b[5:], v)
-	return rawExtension(b)
+type certificateRequest struct {
+	types []uint8
+	names []byte
 }
 
-func renegotiationInfo() Extension {
-	return rawExtension([]byte{0})
+func parseCertificateRequest(b []byte) (*certificateRequest, error) {
+	r := &certificateRequest{}
+	if r.types, b = split(b); b == nil {
+		return nil, errServerKeyExchange
+	}
+	if r.names, b = split2(b); b == nil {
+		return nil, errServerKeyExchange
+	}
+	return r, nil
 }
 
-func sessionTicket() Extension {
-	return nil
+func (r *certificateRequest) marshal(b []byte) []byte {
+	b = pack(b, r.types, nil)
+	return pack2(b, r.names, nil)
 }
