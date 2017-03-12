@@ -5,7 +5,7 @@ import (
 	"net"
 )
 
-func TestClientWithOpenSSL(t *testing.T) {
+func _TestClientWithOpenSSL(t *testing.T) {
 	conn, err := net.Dial("udp", "127.0.0.1:4444")
 	if err != nil {
 		t.Fatal(err)
