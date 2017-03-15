@@ -1,20 +1,58 @@
 package dtls
 
 import (
-	"net"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
+	"github.com/pkg/errors"
 	"io"
 	"log"
-	"encoding/hex"
-	"time"
+	"net"
 	"sort"
+	"time"
 )
 
-var defaultConfig = &Config{
-	MTU: 1400,
+var DefaultConfig = &Config{
+	Rand: rand.Reader,
+	MTU:  1400,
+	RetransmissionTimeout: 500 * time.Millisecond,
+	ReadTimeout:           15 * time.Second,
+	CipherSuites: []uint16{
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+	},
+	SRTPProtectionProfiles: []uint16{
+		SRTP_AES128_CM_HMAC_SHA1_80,
+		SRTP_AES128_CM_HMAC_SHA1_32,
+	},
+	MinVersion: VersionDTLS10,
+	MaxVersion: VersionDTLS12,
 }
 
 type Config struct {
-	MTU int
+	Rand                   io.Reader
+	MTU                    int
+	RetransmissionTimeout  time.Duration
+	ReadTimeout            time.Duration
+	RootCAs                *x509.CertPool
+	CipherSuites           []uint16
+	SRTPProtectionProfiles []uint16
+	MinVersion             uint16
+	MaxVersion             uint16
+	Logf                   func(format string, args ...interface{})
 }
 
 type Conn struct {
@@ -26,7 +64,7 @@ type Conn struct {
 
 func newConn(c net.Conn, config *Config) *Conn {
 	if config == nil {
-		config = defaultConfig
+		config = DefaultConfig
 	}
 	return &Conn{
 		Conn:   c,
@@ -41,17 +79,9 @@ func newConn(c net.Conn, config *Config) *Conn {
 	}
 }
 
-func (c *Conn) alert() {
-	r := &record{
-		typ:   recordAlert,
-		ver:   VersionDTLS10,
-		epoch: c.tx.epoch,
-		seq: c.tx.seq,
-		raw:[]byte{alertLevelError, uint8(alertCloseNotify)},
-	}
-	c.tx.seq++
-	c.tx.write(r.marshal(nil))
-}
+var (
+	errTimeout = errors.New("timeout")
+)
 
 type handshakeProtocol struct {
 	*Conn
@@ -59,41 +89,36 @@ type handshakeProtocol struct {
 	d defrag
 }
 
-func (p *handshakeProtocol) send(m ... *handshake) {
+func (p *handshakeProtocol) send(m ...*handshake) {
 	r := &record{
 		typ:   recordHandshake,
-		ver:   VersionDTLS10,
+		ver:   p.config.MinVersion,
 		epoch: p.tx.epoch,
 	}
-	log.Printf("Send: %#v", r)
 	p.f.prepare(p.tx.mtu, r, m...)
-	for _, it := range m {
-		log.Printf("\t%#v", it)
-		log.Printf("\t\t%#v", it.message)
-	}
 }
 
-func (p *handshakeProtocol) complete() {
-	p.f.reset()
-}
-
-func (p *handshakeProtocol) receive(handle func(*handshake) error) error {
-	rto := 100 * time.Millisecond
-	if err := p.f.transmit(&p.tx); err != nil {
+func (p *handshakeProtocol) receive(handle func(h *handshake) (bool, error)) error {
+	start, done, rto := time.Now(), false, p.config.RetransmissionTimeout
+	if err := p.tx.sendFlight(&p.f); err != nil {
 		return err
 	}
-	done := false
 	for !done {
-		timeout := time.Now().Add(rto)
-		p.SetReadDeadline(timeout)
+		d := p.config.ReadTimeout - time.Since(start)
+		if d < 0 {
+			return errTimeout
+		}
+		if d > rto {
+			d = rto
+		}
+		p.SetReadDeadline(time.Now().Add(d))
 		r, err := p.rx.receive()
-
 		if err != nil {
 			if t, ok := err.(interface {
 				Timeout() bool
 			}); ok && t.Timeout() {
 				rto <<= 1
-				if err = p.f.transmit(&p.tx); err == nil {
+				if err = p.tx.sendFlight(&p.f); err == nil {
 					continue
 				}
 			}
@@ -105,18 +130,25 @@ func (p *handshakeProtocol) receive(handle func(*handshake) error) error {
 				log.Printf("Warning: %v", err)
 				break
 			}
-			if h := p.d.read(); h != nil {
-				log.Printf("Handshake: typ:%v seq:%v", h.typ, h.seq)
-				err = handle(h)
+			if m := p.d.read(); m != nil {
+				done, err = handle(m)
 				if err != nil {
 					return err
 				}
-				done = len(p.f.raw) == 0
+			}
+		case recordAlert:
+			a, err := parseAlert(r.raw)
+			if err != nil {
+				return err
+			}
+			if a.level == levelError {
+				return a
 			}
 		default:
 			log.Printf("Unexpected record: %v", r.typ)
 		}
 	}
+	log.Printf("LOL")
 	return nil
 }
 
@@ -153,7 +185,7 @@ func (rx *receiver) receive() (r *record, err error) {
 			return nil, err
 		}
 		rx.queue = rx.buf[:n]
-		log.Printf("Read: %s", hex.Dump(rx.queue))
+		log.Printf("Receive: %s", hex.Dump(rx.queue))
 	}
 }
 
@@ -186,7 +218,6 @@ type transmitter struct {
 	epoch uint16
 	seq   int64
 	mtu   int
-	buf   []byte
 }
 
 func (tx *transmitter) upgrade() {
@@ -200,19 +231,45 @@ func (tx *transmitter) write(b []byte) error {
 	return err
 }
 
-func (tx *transmitter) send(r *record) error {
-	if tx.buf == nil {
-		tx.buf = make([]byte, 0, 1024)
+func (tx *transmitter) sendRecord(r *record) error {
+	r.epoch, r.seq = tx.epoch, tx.seq
+	tx.seq++
+	return tx.write(r.marshal(nil))
+}
+
+func (tx *transmitter) sendAlert(alert uint8) error {
+	return tx.sendRecord(&record{
+		typ: recordAlert,
+		ver: VersionDTLS10,
+		raw: []byte{levelError, alert},
+	})
+}
+
+func (tx *transmitter) sendFlight(f *flight) error {
+	last, sent := 0, 0
+	for _, to := range f.rec {
+		v := f.raw[last:to]
+		put6(v[5:], tx.seq)
+		tx.seq++
+		if to-sent > tx.mtu {
+			if err := tx.write(f.raw[sent:last]); err != nil {
+				return err
+			}
+			sent = last
+		}
+		last = to
 	}
-	tx.buf = r.marshal(tx.buf[:0])
-	return tx.write(tx.buf)
+	if sent == last {
+		return nil
+	}
+	return tx.write(f.raw[sent:last])
 }
 
 type flight struct {
-	size int
-	seq  int
-	raw  []byte
-	rec  []int
+	pos int
+	seq int
+	raw []byte
+	rec []int
 }
 
 func (f *flight) reset() {
@@ -222,25 +279,25 @@ func (f *flight) reset() {
 	if len(f.rec) > 0 {
 		f.rec = f.rec[:0]
 	}
-	f.size = 0
+	f.pos = 0
 }
 
 func (f *flight) add(mtu int, r *record) {
-	if mtu < 20 {
+	if mtu < 26 {
 		panic("dtls: mtu is too small")
 	}
 	b := f.raw
 	from := len(b)
 	b = r.prepare(b)
 	to := len(b)
-	n, max := to-from, mtu-f.size
+	n, max := to-from, mtu-f.pos
 	l := n - 25
 	put3(b[from+14:], l)
 	if n > max {
-		f.size, max = 0, mtu
+		f.pos, max = 0, mtu
 	}
 	if n <= max {
-		f.size += n
+		f.pos += n
 		f.rec = append(f.rec, to)
 		f.raw = b
 		return
@@ -285,26 +342,6 @@ func (f *flight) prepare(mtu int, r *record, m ...*handshake) {
 	}
 }
 
-func (f *flight) transmit(tx *transmitter) error {
-	last, sent := 0, 0
-	for _, to := range f.rec {
-		v := f.raw[last:to]
-		put6(v[5:], tx.seq)
-		tx.seq++
-		if to-sent > tx.mtu {
-			if err := tx.write(f.raw[sent:last]); err != nil {
-				return err
-			}
-			sent = last
-		}
-		last = to
-	}
-	if sent == last {
-		return nil
-	}
-	return tx.write(f.raw[sent:last])
-}
-
 type defrag struct {
 	seq    int
 	queues [16]*queue
@@ -330,13 +367,14 @@ func (d *defrag) parse(b []byte) error {
 			return errHandshakeFormat
 		}
 		_, q.raw = grow(q.raw[:0], h.len)
-	}
-	for _, it := range q.h {
-		if it.off == h.off {
-			return nil
+	} else {
+		for _, it := range q.h {
+			if it.off == h.off && len(it.raw) == len(h.raw) {
+				return nil
+			}
 		}
 	}
-	if h.off < 0 || h.off > len(q.raw) {
+	if h.off < 0 || h.off+len(h.raw) > len(q.raw) {
 		return errHandshakeFormat
 	}
 	copy(q.raw[h.off:], h.raw)
@@ -351,8 +389,8 @@ func (d *defrag) read() *handshake {
 		return nil
 	}
 	for _, h := range q.h {
-		if h.off == n {
-			n += len(h.raw)
+		if next := h.off + len(h.raw); h.off <= n && next > n {
+			n = next
 		}
 	}
 	if n == len(q.raw) {

@@ -2,48 +2,46 @@ package dtls
 
 import (
 	"errors"
+	"fmt"
 )
 
 var (
 	errAlertFormat = errors.New("dtls: alert format error")
 )
 
-type alert uint8
-
 const (
-	alertLevelWarning = 1
-	alertLevelError   = 2
+	levelWarning = 1
+	levelError   = 2
 )
 
 const (
-	alertCloseNotify            alert = 0
-	alertUnexpectedMessage      alert = 10
-	alertBadRecordMAC           alert = 20
-	alertDecryptionFailed       alert = 21
-	alertRecordOverflow         alert = 22
-	alertDecompressionFailure   alert = 30
-	alertHandshakeFailure       alert = 40
-	alertBadCertificate         alert = 42
-	alertUnsupportedCertificate alert = 43
-	alertCertificateRevoked     alert = 44
-	alertCertificateExpired     alert = 45
-	alertCertificateUnknown     alert = 46
-	alertIllegalParameter       alert = 47
-	alertUnknownCA              alert = 48
-	alertAccessDenied           alert = 49
-	alertDecodeError            alert = 50
-	alertDecryptError           alert = 51
-	alertProtocolVersion        alert = 70
-	alertInsufficientSecurity   alert = 71
-	alertInternalError          alert = 80
-	alertUserCanceled           alert = 90
-	alertNoRenegotiation        alert = 100
-	alertUnsupportedExtension   alert = 110
+	alertCloseNotify            uint8 = 0
+	alertUnexpectedMessage      uint8 = 10
+	alertBadRecordMAC           uint8 = 20
+	alertDecryptionFailed       uint8 = 21
+	alertRecordOverflow         uint8 = 22
+	alertDecompressionFailure   uint8 = 30
+	alertHandshakeFailure       uint8 = 40
+	alertBadCertificate         uint8 = 42
+	alertUnsupportedCertificate uint8 = 43
+	alertCertificateRevoked     uint8 = 44
+	alertCertificateExpired     uint8 = 45
+	alertCertificateUnknown     uint8 = 46
+	alertIllegalParameter       uint8 = 47
+	alertUnknownCA              uint8 = 48
+	alertAccessDenied           uint8 = 49
+	alertDecodeError            uint8 = 50
+	alertDecryptError           uint8 = 51
+	alertProtocolVersion        uint8 = 70
+	alertInsufficientSecurity   uint8 = 71
+	alertInternalError          uint8 = 80
+	alertUserCanceled           uint8 = 90
+	alertNoRenegotiation        uint8 = 100
+	alertUnsupportedExtension   uint8 = 110
 )
 
-/*
-func (a *alert) Error() string {
-	return fmt.Sprintf("dtls: alert %x", a.typ)
+type alert struct {
+	level, typ uint8
 }
 
 func parseAlert(b []byte) (*alert, error) {
@@ -51,11 +49,9 @@ func parseAlert(b []byte) (*alert, error) {
 		return nil, errHandshakeFormat
 	}
 	_ = b[1]
-	return &alert{b[0],b[1]}
+	return &alert{b[0], b[1]}, nil
 }
 
-func (a *alert) marshal(b []byte) []byte {
-	var v []byte
-	v, b = grow(b, 2)
-	_ = v[8]
-*/
+func (a *alert) Error() string {
+	return fmt.Sprintf("dtls: alert %x", uint8(a.typ))
+}

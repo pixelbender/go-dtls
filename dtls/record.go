@@ -5,8 +5,7 @@ import (
 )
 
 var (
-	errRecordFormat   = errors.New("dtls: record format error")
-	errRecordSequence = errors.New("dtls: record sequence error")
+	errRecordFormat = errors.New("dtls: record format error")
 )
 
 const (

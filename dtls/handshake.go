@@ -1,7 +1,11 @@
 package dtls
 
 import (
+	"crypto/ecdsa"
+	"crypto/rsa"
+	"crypto/x509"
 	"errors"
+	"fmt"
 )
 
 var (
@@ -26,6 +30,10 @@ const (
 const (
 	compNone uint8 = 0
 )
+
+var supportedCompression = []uint8{
+	compNone,
+}
 
 type marshaler interface {
 	marshal([]byte) []byte
@@ -199,27 +207,48 @@ func parseHelloVerifyRequest(b []byte) (*helloVerifyRequest, error) {
 	return h, nil
 }
 
-type certificate [][]byte
+func (r *helloVerifyRequest) marshal(b []byte) []byte {
+	var v []byte
+	v, b = grow(b, 2)
+	_ = v[1]
+	v[0], v[1] = uint8(r.ver>>8), uint8(r.ver)
+	return pack(b, r.cookie, nil)
+}
 
-func parseCertificate(b []byte) (certificate, error) {
+type certificate struct {
+	raw  [][]byte
+	cert []*x509.Certificate
+}
+
+func parseCertificate(b []byte) (*certificate, error) {
 	if b, _ = split3(b); b == nil {
 		return nil, errHandshakeFormat
 	}
 	var v []byte
-	с := make(certificate, 0, 3)
+	c := &certificate{}
 	for len(b) > 0 {
 		if v, b = split3(b); b == nil {
 			return nil, errHandshakeFormat
 		}
-		с = append(с, v)
+		cert, err := x509.ParseCertificate(v)
+		if err != nil {
+			return nil, err
+		}
+		switch c := cert.PublicKey.(type) {
+		case *rsa.PublicKey, *ecdsa.PublicKey:
+		default:
+			return nil, fmt.Errorf("dtls: unsupported type of certificate's public key: %T", c)
+		}
+		c.raw = append(c.raw, v)
+		c.cert = append(c.cert, cert)
 	}
-	return с, nil
+	return c, nil
 }
 
-func (c certificate) marshal(b []byte) []byte {
+func (c *certificate) marshal(b []byte) []byte {
 	p := len(b)
 	_, b = grow(b, 3)
-	for _, v := range c {
+	for _, v := range c.raw {
 		b = pack3(b, v, nil)
 	}
 	n, v := len(b)-p-3, b[p:]
@@ -260,6 +289,38 @@ func (e *serverKeyExchange) marshal(b []byte) []byte {
 	_ = b[2]
 	v[0], v[1], v[2] = 3, uint8(e.curve>>8), uint8(e.curve)
 	b = pack(b, e.pub, nil)
+	return pack2(b, e.sign, nil)
+}
+
+type clientKeyExchange struct {
+	pub []byte
+}
+
+func parseClientKeyExchange(b []byte) (*clientKeyExchange, error) {
+	e := &clientKeyExchange{}
+	if e.pub, b = split(b); b == nil {
+		return nil, errServerKeyExchange
+	}
+	return e, nil
+}
+
+func (e *clientKeyExchange) marshal(b []byte) []byte {
+	return pack(b, e.pub, nil)
+}
+
+type certificateVerify struct {
+	sign []byte
+}
+
+func parseCertificateVerify(b []byte) (*certificateVerify, error) {
+	e := &certificateVerify{}
+	if e.sign, b = split2(b); b == nil {
+		return nil, errServerKeyExchange
+	}
+	return e, nil
+}
+
+func (e *certificateVerify) marshal(b []byte) []byte {
 	return pack2(b, e.sign, nil)
 }
 

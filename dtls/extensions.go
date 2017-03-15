@@ -1,6 +1,12 @@
 package dtls
 
-import "crypto/elliptic"
+import (
+	"crypto/elliptic"
+	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/sha512"
+	"hash"
+)
 
 const (
 	extRenegotiationInfo    uint16 = 0xff01
@@ -32,13 +38,32 @@ const (
 	hashSHA512 uint8 = 6
 )
 
+func newHash(hash uint8) hash.Hash {
+	switch hash {
+	case hashSHA1:
+		return sha1.New()
+	case hashSHA256:
+		return sha256.New()
+	case hashSHA384:
+		return sha512.New384()
+	case hashSHA512:
+		return sha512.New()
+	}
+	return nil
+}
+
 type signatureAlgorithm struct {
 	hash, sign uint8
 }
 
-const (
-	pointUncompressed uint8 = 0
-)
+var supportedSignatureAlgorithms = []signatureAlgorithm{
+	{hashSHA256, signRSA},
+	{hashSHA256, signECDSA},
+	{hashSHA384, signRSA},
+	{hashSHA384, signECDSA},
+	{hashSHA1, signRSA},
+	{hashSHA1, signECDSA},
+}
 
 const (
 	secp256r1  uint16 = 23
@@ -47,7 +72,14 @@ const (
 	ecdhx25519 uint16 = 29
 )
 
-func getEllipticCurve(v uint16) elliptic.Curve {
+var supportedCurves = []uint16{
+	secp256r1,
+	secp384r1,
+	secp521r1,
+	ecdhx25519,
+}
+
+func getCurve(v uint16) elliptic.Curve {
 	switch v {
 	case secp256r1:
 		return elliptic.P256()
@@ -58,6 +90,14 @@ func getEllipticCurve(v uint16) elliptic.Curve {
 	default:
 		return nil
 	}
+}
+
+const (
+	pointUncompressed uint8 = 0
+)
+
+var supportedPointFormats = []uint8{
+	pointUncompressed,
 }
 
 type extensions struct {

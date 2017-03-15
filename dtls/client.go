@@ -1,88 +1,126 @@
 package dtls
 
 import (
-	"net"
-	"crypto/rand"
+	"bytes"
+	"io"
 	"log"
+	"net"
 )
 
 func NewClient(conn net.Conn, config *Config) (*Conn, error) {
 	c := newConn(conn, config)
-
 	h := &handshakeProtocol{Conn: c}
 	if err := clientHandshake(h); err != nil {
 		return nil, err
 	}
-
 	return c, nil
 }
 
-func clientHandshake(p *handshakeProtocol) error {
-	r := make([]byte, 32)
-	rand.Read(r)
+type session struct {
+	ver uint16
+}
 
+func clientHandshake(p *handshakeProtocol) (err error) {
 	hello := &clientHello{
-		ver:          VersionDTLS10,
-		random:       r,
-		cipherSuites: supportedCipherSuites,
+		ver:          p.config.MaxVersion,
+		random:       make([]byte, 32),
+		cipherSuites: p.config.CipherSuites,
 		compMethods:  supportedCompression,
 		extensions: &extensions{
 			renegotiationSupported: true,
-			srtpProtectionProfiles: srtpSupportedProtectionProfiles,
+			srtpProtectionProfiles: p.config.SRTPProtectionProfiles,
 			extendedMasterSecret:   true,
 			sessionTicket:          true,
-			signatureAlgorithms:    supportedSignatureAlgorithms,
 			supportedPoints:        supportedPointFormats,
 			supportedCurves:        supportedCurves,
 		},
 	}
-	p.send(&handshake{
-		typ:     handshakeClientHello,
-		message: hello,
-	})
+	if _, err = io.ReadFull(p.config.Rand, hello.random); err != nil {
+		p.tx.sendAlert(alertInternalError)
+		return
+	}
+	if hello.ver == VersionDTLS12 {
+		hello.signatureAlgorithms = supportedSignatureAlgorithms
+	}
+
 	var (
-		verify *helloVerifyRequest
-		req    *certificateRequest
-		server *serverHello
-		key    *serverKeyExchange
-		cert   certificate
+		server      *serverHello
+		cert        *certificate
+		cipherSuite *cipherSuite
 	)
-	err := p.receive(func(h *handshake) (err error) {
-		switch h.typ {
+
+	p.send(&handshake{typ: handshakeClientHello, message: hello})
+	err = p.receive(func(m *handshake) (done bool, err error) {
+		switch m.typ {
 		case handshakeHelloVerifyRequest:
-			verify, err = parseHelloVerifyRequest(h.raw)
-			if err != nil {
-				return err
+			var req *helloVerifyRequest
+			if req, err = parseHelloVerifyRequest(m.raw); err != nil {
+				p.tx.sendAlert(alertDecodeError)
+				return
 			}
-			if hello.cookie != nil {
-				return errHandshakeSequence
-			}
-			hello.cookie = clone(verify.cookie)
-			p.send(&handshake{
-				typ:     handshakeClientHello,
-				message: hello,
-			})
+			// TODO: reset finished mac
+			hello.cookie = clone(req.cookie)
+			p.send(&handshake{typ: handshakeClientHello, message: hello})
 		case handshakeServerHello:
-			server, err = parseServerHello(clone(h.raw))
+			// TODO: write mac
+			if server, err = parseServerHello(clone(m.raw)); err != nil {
+				p.tx.sendAlert(alertDecodeError)
+				return
+			}
+			cipherSuite = getCipherSuite(hello.cipherSuites, server.cipherSuite)
+			// TODO: check compatibility
+			if len(hello.sessionID) > 0 && bytes.Equal(hello.sessionID, server.sessionID) {
+				// TODO: restore master secret and certs
+			}
+			log.Printf("%#v", server)
 		case handshakeCertificate:
-			cert, err = parseCertificate(clone(h.raw))
+			// TODO: write mac
+			if cert, err = parseCertificate(m.raw); err != nil {
+				p.tx.sendAlert(alertBadCertificate)
+				return
+			}
+			// TODO: check no certificates
+			// TODO: validate certificate
+			// TODO: verify peer certificate
+			// TODO: check renegotiation
+			log.Printf("%#v", cert.cert)
 		case handshakeServerKeyExchange:
-			key, err = parseServerKeyExchange(clone(h.raw))
-		case handshakeCertificateRequest:
-			req, err = parseCertificateRequest(clone(h.raw))
+			// TODO: write mac
+			var ex *serverKeyExchange
+			if ex, err = parseServerKeyExchange(clone(m.raw)); err != nil {
+				p.tx.sendAlert(alertUnexpectedMessage)
+				return
+			}
+
+			log.Printf("%#v", ex)
 		case handshakeServerHelloDone:
-			p.complete()
+			done = true
 		default:
-			return errHandshakeSequence
+			p.tx.sendAlert(alertUnexpectedMessage)
+			err = errHandshakeSequence
 		}
 		return
 	})
 	if err != nil {
-		return err
+		return
 	}
 
-	p.alert()
-
-	log.Printf("DONE")
-	return nil
+	log.Printf("Mess")
+	return
 }
+
+//func clientServerCompatibility(client *clientHello, server *serverHello) error {
+//	if server.compMethod != compNone {
+//		return errors.New("dtls: server selected unsupported compression method")
+//	}
+//	ok := false
+//	for _, it := range client.cipherSuites {
+//		if it == server.cipherSuite {
+//			ok = true
+//			break
+//		}
+//	}
+//	if !ok {
+//		return errors.New("dtls: server selected unsupported compression method")
+//	}
+//}
