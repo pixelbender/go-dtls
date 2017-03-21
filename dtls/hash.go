@@ -1,86 +1,111 @@
 package dtls
 
-/*
-type extHash struct {
+import (
+	"crypto/hmac"
+	"crypto/md5"
+	"crypto/sha1"
+	"hash"
+)
+
+var (
+	masterSecret   = []byte("master secret")
+	clientFinished = []byte("client finished")
+	serverFinished = []byte("server finished")
+)
+
+type md5sha1 struct {
 	hash.Hash
 	md hash.Hash
 }
 
-func (h extHash) Write(b []byte) (n int, error) {
+func newMD5SHA1() hash.Hash {
+	return &md5sha1{sha1.New(), md5.New()}
+}
+
+func (h *md5sha1) Write(b []byte) (int, error) {
 	h.md.Write(b)
-	return h.Hash.Write(b)
+	return h.Write(b)
 }
 
-func (h extHash) Sum(b []byte) []byte {
-	out := make([]byte, 0, h.Hash.Size() + md5.Size)
-	out = h.clientMD5.Sum(out)
-	return h.client.Sum(out)
+func (h *md5sha1) Reset() {
+	h.md.Reset()
+	h.Reset()
 }
 
-type finish struct {
-	client    hash.Hash
-	server    hash.Hash
+func (h *md5sha1) Sum(b []byte) []byte {
+	return h.Sum(h.md.Sum(b))
 }
 
-func newHash(ver uint16, suite *cipherSuite) *finish {
-	switch ver {
-	case VersionDTLS10:
-		return &hash{sha1.New(), sha1.New(), md5.New(), md5.New(), prf10}
-		prf10, crypto.Hash(0)
-	case VersionDTLS12:
-		if suite.flags&suiteSHA384 != 0 {
-			return &hash{sha512.New384(), sha512.New384(), buffer, version, prf12(crypto.SHA384)}
+/*
+type finishedHash struct {
+	hash func() hash.Hash
+	ver  uint16
+	buf  []byte
+}
+
+func newSHA(ver uint16) *finishedHash {
+	h := sha256.New
+	if ver == VersionDTLS10 {
+		h = newMD5SHA1
+	}
+	return &finishedHash{h, ver, nil}
+}
+
+func newSHA384(ver uint16) *finishedHash {
+	return &finishedHash{sha512.New384, ver, nil}
+}
+
+func (h *finishedHash) Reset() {
+	if h.buf != nil {
+		h.buf = h.buf[:0]
+	}
+}
+
+func (h *finishedHash) Write(b []byte) (int, error) {
+	h.buf = append(h.buf, b...)
+	return len(b), nil
+}
+
+func (h *finishedHash) Sum() []byte {
+	r := h.hash()
+	r.Write(h.buf)
+	return r.Sum(nil)
+}
+
+func (h *finishedHash) sumServer(secret []byte) []byte {
+	return h.prf(secret, clientFinished, h.Sum())
+}
+
+func (h *finishedHash) sumClient(secret []byte) []byte {
+	return h.prf(secret, serverFinished, h.Sum())
+}
+
+func (h *finishedHash) prf(secret, label, seed []byte) []byte {
+	if h.ver == VersionDTLS10 {
+		s1, s2 := secret[0: (len(secret)+1)/2], secret[len(secret)/2:]
+		r := phash(md5.New, s1, label, seed)
+		for i, x := range phash(sha1.New, s2, label, seed) {
+			r[i] ^= x
 		}
-		return &hash{sha256.New(), sha256.New(), buffer, version, prf12(crypto.SHA256)}
-
+		return r
 	}
-	var buffer []byte
-	if version == VersionSSL30 || version >= VersionTLS12 {
-		buffer = []byte{}
-	}
-
-	prf, hash := prfAndHashForVersion(version, cipherSuite)
-	if hash != 0 {
-		return finishedHash{hash.New(), hash.New(), nil, nil, buffer, version, prf}
-	}
-
-	return finishedHash{sha1.New(), sha1.New(), md5.New(), md5.New(), buffer, version, prf}
+	return phash(h.hash, secret, label, seed)
 }
+*/
 
-func (f *finish) s(result, secret, label, seed []byte) {
-
-}
-
-type prf func(result, secret, label, seed []byte)
-
-func prf12(hashFunc func() hash.Hash) prf {
-	return func(result, secret, label, seed []byte) {
-		phash(result, secret, label, seed, hashFunc)
-	}
-}
-
-func prf10(result, secret, label, seed []byte) {
-	s1, s2 := secret[0: (len(secret)+1)/2], secret[len(secret)/2:]
-	phash(result, s1, label, seed, md5.New)
-	result2 := make([]byte, len(result))
-	phash(result2, s2, label, seed, sha1.New)
-	for i, b := range result2 {
-		result[i] ^= b
-	}
-}
-
-func phash(result, secret, label, seed []byte, hash func() hash.Hash) {
+func phash(hash func() hash.Hash, result, secret []byte, params ...[]byte) {
 	h := hmac.New(hash, secret)
-	h.Write(label)
-	h.Write(seed)
+	for _, p := range params {
+		h.Write(p)
+	}
 	a := h.Sum(nil)
-
 	j := 0
 	for j < len(result) {
 		h.Reset()
 		h.Write(a)
-		h.Write(label)
-		h.Write(seed)
+		for _, p := range params {
+			h.Write(p)
+		}
 		b := h.Sum(nil)
 		todo := len(b)
 		if j+todo > len(result) {
@@ -88,10 +113,8 @@ func phash(result, secret, label, seed []byte, hash func() hash.Hash) {
 		}
 		copy(result[j:j+todo], b)
 		j += todo
-
 		h.Reset()
 		h.Write(a)
 		a = h.Sum(nil)
 	}
 }
-*/

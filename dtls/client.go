@@ -1,126 +1,177 @@
 package dtls
 
 import (
-	"bytes"
+	"crypto/rsa"
+	"fmt"
 	"io"
-	"log"
 	"net"
+	"time"
 )
 
 func NewClient(conn net.Conn, config *Config) (*Conn, error) {
 	c := newConn(conn, config)
-	h := &handshakeProtocol{Conn: c}
-	if err := clientHandshake(h); err != nil {
+	h := &clientHandshake{handshakeProtocol: c.newHandshake()}
+	if err := h.handshake(); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-type session struct {
-	ver uint16
+type clientHandshake struct {
+	*handshakeProtocol
+	ver          uint16
+	suite        *cipherSuite
+	masterSecret []byte
 }
 
-func clientHandshake(p *handshakeProtocol) (err error) {
-	hello := &clientHello{
-		ver:          p.config.MaxVersion,
+func (c *clientHandshake) handshake() (err error) {
+	ch := &clientHello{
+		ver:          c.config.MaxVersion,
 		random:       make([]byte, 32),
-		cipherSuites: p.config.CipherSuites,
+		cipherSuites: c.config.CipherSuites,
 		compMethods:  supportedCompression,
 		extensions: &extensions{
 			renegotiationSupported: true,
-			srtpProtectionProfiles: p.config.SRTPProtectionProfiles,
+			srtpProtectionProfiles: c.config.SRTPProtectionProfiles,
 			extendedMasterSecret:   true,
 			sessionTicket:          true,
 			supportedPoints:        supportedPointFormats,
 			supportedCurves:        supportedCurves,
 		},
 	}
-	if _, err = io.ReadFull(p.config.Rand, hello.random); err != nil {
-		p.tx.sendAlert(alertInternalError)
+	if _, err = io.ReadFull(c.config.getRand(), ch.random); err != nil {
+		// TODO: send only if renegotiation handshake
+		c.sendAlert(alertInternalError)
 		return
 	}
-	if hello.ver == VersionDTLS12 {
-		hello.signatureAlgorithms = supportedSignatureAlgorithms
+	if ch.ver == VersionDTLS12 {
+		ch.signatureAlgorithms = supportedSignatureAlgorithms
 	}
-
 	var (
-		server      *serverHello
-		cert        *certificate
-		cipherSuite *cipherSuite
+		sh    *serverHello
+		skey  *serverKeyExchange
+		scert *certificate
+		creq  *certificateRequest
 	)
-
-	p.send(&handshake{typ: handshakeClientHello, message: hello})
-	err = p.receive(func(m *handshake) (done bool, err error) {
+	c.reset(true)
+	c.write(&handshake{typ: handshakeClientHello, message: ch})
+	if err = c.flight(func(m *handshake) (done bool, err error) {
 		switch m.typ {
 		case handshakeHelloVerifyRequest:
-			var req *helloVerifyRequest
-			if req, err = parseHelloVerifyRequest(m.raw); err != nil {
-				p.tx.sendAlert(alertDecodeError)
-				return
+			var r *helloVerifyRequest
+			if r, err = parseHelloVerifyRequest(m.raw); err != nil {
+				break
 			}
 			// TODO: reset finished mac
-			hello.cookie = clone(req.cookie)
-			p.send(&handshake{typ: handshakeClientHello, message: hello})
+			ch.cookie = clone(r.cookie)
+			c.reset(true)
+			c.write(&handshake{typ: handshakeClientHello, message: ch})
 		case handshakeServerHello:
-			// TODO: write mac
-			if server, err = parseServerHello(clone(m.raw)); err != nil {
-				p.tx.sendAlert(alertDecodeError)
-				return
-			}
-			cipherSuite = getCipherSuite(hello.cipherSuites, server.cipherSuite)
-			// TODO: check compatibility
-			if len(hello.sessionID) > 0 && bytes.Equal(hello.sessionID, server.sessionID) {
-				// TODO: restore master secret and certs
-			}
-			log.Printf("%#v", server)
+			sh, err = parseServerHello(m.raw)
 		case handshakeCertificate:
-			// TODO: write mac
-			if cert, err = parseCertificate(m.raw); err != nil {
-				p.tx.sendAlert(alertBadCertificate)
-				return
-			}
-			// TODO: check no certificates
-			// TODO: validate certificate
-			// TODO: verify peer certificate
-			// TODO: check renegotiation
-			log.Printf("%#v", cert.cert)
+			scert, err = parseCertificate(m.raw)
 		case handshakeServerKeyExchange:
-			// TODO: write mac
-			var ex *serverKeyExchange
-			if ex, err = parseServerKeyExchange(clone(m.raw)); err != nil {
-				p.tx.sendAlert(alertUnexpectedMessage)
-				return
-			}
-
-			log.Printf("%#v", ex)
+			skey, err = parseServerKeyExchange(m.raw)
+		case handshakeCertificateRequest:
+			creq, err = parseCertificateRequest(m.raw)
 		case handshakeServerHelloDone:
 			done = true
 		default:
-			p.tx.sendAlert(alertUnexpectedMessage)
-			err = errHandshakeSequence
+			c.sendAlert(alertUnexpectedMessage)
+			return false, fmt.Errorf("dtls: unexpected message: 0x%x", m.typ)
+		}
+		if err != nil {
+			c.sendAlert(alertDecodeError)
 		}
 		return
-	})
-	if err != nil {
+	}); err != nil {
 		return
 	}
 
-	log.Printf("Mess")
+	if sh == nil || scert == nil {
+		c.sendAlert(alertHandshakeFailure)
+		return errUnexpectedMessage
+	}
+
+	//var (
+	//	resume = len(ch.sessionID) > 0 && bytes.Equal(ch.sessionID, sh.sessionID)
+	//)
+	if c.ver, err = c.config.getVersion(sh.ver); err != nil {
+		c.sendAlert(alertProtocolVersion)
+		return
+	}
+	if c.suite, err = c.config.getCipherSuite(sh.cipherSuite); err != nil {
+		c.sendAlert(alertHandshakeFailure)
+		return
+	}
+	if _, err = c.config.getCompressionMethod(sh.compMethod); err != nil {
+		c.sendAlert(alertUnexpectedMessage)
+		return
+	}
+	if err = c.config.verifyCertificate(scert.cert...); err != nil {
+		c.sendAlert(alertBadCertificate)
+		return
+	}
+	// TODO: check renegotiation
+
+	c.reset(false)
+	//
+	////preMasterSecret, ckx, err := keyAgreement.generateClientKeyExchange(c.config, hs.hello, c.peerCertificates[0])
+	//
+	if creq != nil {
+		c.write(&handshake{typ: handshakeCertificate, message: &certificate{}})
+		// TODO: write peer certificate chain
+	}
+
+	switch c.suite.key {
+	case keyRSA:
+		var (
+			cert    = scert.cert[0]
+			pub, ok = cert.PublicKey.(*rsa.PublicKey)
+			ckey    = &clientKeyExchange{typ: keyRSA}
+		)
+		if !ok {
+			c.sendAlert(alertUnsupportedCertificate)
+			return fmt.Errorf("dtls: unsupported type of certificate public key: %T", cert.PublicKey)
+		}
+		if ckey.pub, err = c.newMasterSecretRSA(ch, sh, pub); err != nil {
+			c.sendAlert(alertInternalError)
+			return
+		}
+		c.write(&handshake{typ: handshakeClientKeyExchange, message: ckey})
+	case keyECDH:
+		// TODO: implement
+		c.sendAlert(alertInternalError)
+		return fmt.Errorf("dtls: not implemented")
+	default:
+		c.sendAlert(alertInternalError)
+		return errUnsupportedKeyExchangeAlgorithm
+	}
+
+	c.changeCipherSpec()
+
+	c.tx.epoch++
+	c.write(&handshake{typ: handshakeFinished, raw: c.finishedHash()})
+
+	c.tx.writeFlight(c.enc.raw, c.enc.rec)
+	time.Sleep(time.Second)
+	/*
+		return c.flight(func(m *handshake) (done bool, err error) {
+			return false, nil
+		})*/
 	return
 }
 
-//func clientServerCompatibility(client *clientHello, server *serverHello) error {
-//	if server.compMethod != compNone {
-//		return errors.New("dtls: server selected unsupported compression method")
-//	}
-//	ok := false
-//	for _, it := range client.cipherSuites {
-//		if it == server.cipherSuite {
-//			ok = true
-//			break
-//		}
-//	}
-//	if !ok {
-//		return errors.New("dtls: server selected unsupported compression method")
-//	}
-//}
+func (c *clientHandshake) finishedHash() []byte {
+	return c.suite.finishedHash(c.ver, c.masterSecret, clientFinished, c.buf.Bytes())
+}
+
+func (c *clientHandshake) newMasterSecretRSA(ch *clientHello, sh *serverHello, pub *rsa.PublicKey) ([]byte, error) {
+	v := make([]byte, 48)
+	v[0], v[1] = uint8(ch.ver>>8), uint8(ch.ver)
+	if _, err := io.ReadFull(c.config.Rand, v[2:]); err != nil {
+		return nil, err
+	}
+	c.masterSecret = c.suite.masterSecret(c.ver, v, ch.random, sh.random)
+	return rsa.EncryptPKCS1v15(c.config.Rand, pub, v)
+}

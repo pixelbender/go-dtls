@@ -9,9 +9,12 @@ var (
 )
 
 const (
-	recordAlert     uint8 = 21
-	recordHandshake uint8 = 22
+	recordChangeCipherSpec uint8 = 20
+	recordAlert            uint8 = 21
+	recordHandshake        uint8 = 22
 )
+
+var changeCipherSpec = []byte{1}
 
 type record struct {
 	typ        uint8

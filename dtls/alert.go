@@ -40,6 +40,32 @@ const (
 	alertUnsupportedExtension   uint8 = 110
 )
 
+var alertText = map[uint8]string{
+	alertCloseNotify:            "close notify",
+	alertUnexpectedMessage:      "unexpected message",
+	alertBadRecordMAC:           "bad record MAC",
+	alertDecryptionFailed:       "decryption failed",
+	alertRecordOverflow:         "record overflow",
+	alertDecompressionFailure:   "decompression failure",
+	alertHandshakeFailure:       "handshake failure",
+	alertBadCertificate:         "bad certificate",
+	alertUnsupportedCertificate: "unsupported certificate",
+	alertCertificateRevoked:     "revoked certificate",
+	alertCertificateExpired:     "expired certificate",
+	alertCertificateUnknown:     "unknown certificate",
+	alertIllegalParameter:       "illegal parameter",
+	alertUnknownCA:              "unknown certificate authority",
+	alertAccessDenied:           "access denied",
+	alertDecodeError:            "error decoding message",
+	alertDecryptError:           "error decrypting message",
+	alertProtocolVersion:        "protocol version not supported",
+	alertInsufficientSecurity:   "insufficient security level",
+	alertInternalError:          "internal error",
+	alertUserCanceled:           "user canceled",
+	alertNoRenegotiation:        "no renegotiation",
+	alertUnsupportedExtension:   "unsupported extension",
+}
+
 type alert struct {
 	level, typ uint8
 }
@@ -53,5 +79,9 @@ func parseAlert(b []byte) (*alert, error) {
 }
 
 func (a *alert) Error() string {
-	return fmt.Sprintf("dtls: alert %x", uint8(a.typ))
+	v, ok := alertText[a.typ]
+	if !ok {
+		v = fmt.Sprintf("alert 0x%x", a.typ)
+	}
+	return fmt.Sprintf("dtls: ", v)
 }

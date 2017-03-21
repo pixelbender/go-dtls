@@ -1,7 +1,38 @@
 package dtls
 
 type keyAgreement interface {
+	clientKeyExchange(hello *clientHello, cert *certificate) (*clientKeyExchange, error)
 }
+
+type keyAgreementRSA struct {
+	config *Config
+	ver    uint16
+}
+
+/*func (ka keyAgreementRSA) processServerKeyExchange(config *Config, clientHello *clientHello, cert *x509.Certificate) ([]byte, *clientKeyExchangeMsg, error) {
+	if pub, ok := cert.PublicKey.(*rsa.PublicKey); !ok {
+		return fmt.Errorf("dtls: unsupported public key %T", cert.PublicKey)
+	}
+	preMasterSecret := make([]byte, 48)
+	preMasterSecret[0] = byte(clientHello.vers >> 8)
+	preMasterSecret[1] = byte(clientHello.vers)
+	_, err := io.ReadFull(config.rand(), preMasterSecret[2:])
+	if err != nil {
+		return nil, nil, err
+	}
+
+	encrypted, err := rsa.EncryptPKCS1v15(config.rand(), cert.PublicKey.(*rsa.PublicKey), preMasterSecret)
+	if err != nil {
+		return nil, nil, err
+	}
+	ckx := new(clientKeyExchangeMsg)
+	ckx.ciphertext = make([]byte, len(encrypted)+2)
+	ckx.ciphertext[0] = byte(len(encrypted) >> 8)
+	ckx.ciphertext[1] = byte(len(encrypted))
+	copy(ckx.ciphertext[2:], encrypted)
+	return preMasterSecret, ckx, nil
+}
+*/
 
 /*
 type ecdheKeyAgreement struct {

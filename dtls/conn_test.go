@@ -6,15 +6,39 @@ import (
 	"testing"
 )
 
+type dumpConn struct {
+	net.Conn
+	t *testing.T
+}
+
+func (c *dumpConn) Read(b []byte) (n int, err error) {
+	n, err = c.Conn.Read(b)
+	if err == nil {
+		c.t.Logf("Read: %s", hex.Dump(b[:n]))
+	}
+	return
+}
+
+func (c *dumpConn) Write(b []byte) (n int, err error) {
+	n, err = c.Conn.Write(b)
+	if err == nil {
+		c.t.Logf("Write: %s", hex.Dump(b))
+	}
+	return
+}
+
 func _TestClientWithOpenSSL(t *testing.T) {
 	conn, err := net.Dial("udp", "127.0.0.1:4444")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = NewClient(conn, nil)
+	config := DefaultConfig.Clone()
+	config.InsecureSkipVerify = true
+	c, err := NewClient(&dumpConn{conn, t}, config)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer c.Close()
 }
 
 /*
@@ -50,7 +74,7 @@ func generateCerts() error {
 }
 */
 
-func TestHandshakeDefrag(t *testing.T) {
+func TestHandshakeDecoder(t *testing.T) {
 	frag := []string{
 		"0b0002c700010000000000e60002c40002c1308202bd308201a5a003020102020100300d06092a864886f70d01010b05003022310b30090603550406130253453113301106035504030c0a4f70656e576562525443301e170d3137303330373132303235355a170d3138303330373132303235355a3022310b30090603550406130253453113301106035504030c0a4f70656e57656252544330820122300d06092a864886f70d01010105000382010f003082010a0282010100c2717a632ea4618e599ed6173dfafef22b4f8df27120e30978052c3532c41532ef7466cdf1fe70f6d0554069cb0dfec3ac99f93fabece26a",
 		"0b0002c700010000e60000e7bb9fcefdae4197cee480c5dd0aa76ca2a9ae85287176180778ed7ce4b9c10bf3ee6426827cb4f4c933c6dd9c4e94dd43aa59d7c60a8a33db961a6dba5243de7ddeab2d9f13ed74a6c0259aa4358e8b25632a5f11e9692118ed1f084fb6953c9a1507825d919394c438cf277c149488c0628e6e3ddf2c1de4a4570b711cc51a6e0747e9aea0fc4687eeb10f45945eee41b147a0d697a825e3817e6b7d0a0ec5bd382c60e0f7c1ef1acb820ed28fdb2c5fa5abb1c8d5cddf9bf3f4309687baec0b2cb97cbf62f22fb30203010001300d06092a864886f70d01010b0500038201010061aa714fdc32",
@@ -63,12 +87,10 @@ func TestHandshakeDefrag(t *testing.T) {
 		{2, 0, 1, 0, 2, 0, 3},
 		{0, 1, 2, 1, 0, 1, 3},
 	} {
-		d := &defrag{seq: 1}
+		d := &handshakeDecoder{seq: 1}
 		for _, i := range seq {
 			b, _ := hex.DecodeString(frag[i])
-			if d.parse(b) != nil {
-				continue
-			}
+			d.parse(b)
 		}
 		h := d.read()
 		if h == nil || d.seq != 2 {
@@ -84,40 +106,39 @@ func TestHandshakeDefrag(t *testing.T) {
 	}
 }
 
-func TestHandshakeFlight(t *testing.T) {
+func TestHandshakeEncoder(t *testing.T) {
 	for _, mtu := range []int{1024, 512, 256, 128, 64, 32} {
-		f := &flight{}
-		f.prepare(mtu, &record{
+		e := &handshakeEncoder{mtu: mtu}
+		e.writeRecord(&record{
 			typ: recordHandshake,
 			ver: DefaultConfig.MinVersion,
-		}, &handshake{
-			typ: handshakeClientHello,
-			message: &clientHello{
-				ver:          DefaultConfig.MaxVersion,
-				random:       make([]byte, 32),
-				cipherSuites: DefaultConfig.CipherSuites,
-				compMethods:  supportedCompression,
-				extensions: &extensions{
-					renegotiationSupported: true,
-					srtpProtectionProfiles: DefaultConfig.SRTPProtectionProfiles,
-					extendedMasterSecret:   true,
-					sessionTicket:          true,
-					signatureAlgorithms:    supportedSignatureAlgorithms,
-					supportedPoints:        supportedPointFormats,
-					supportedCurves:        supportedCurves,
+			payload: &handshake{
+				typ: handshakeClientHello,
+				message: &clientHello{
+					ver:          DefaultConfig.MaxVersion,
+					random:       make([]byte, 32),
+					cipherSuites: DefaultConfig.CipherSuites,
+					compMethods:  supportedCompression,
+					extensions: &extensions{
+						renegotiationSupported: true,
+						srtpProtectionProfiles: DefaultConfig.SRTPProtectionProfiles,
+						extendedMasterSecret:   true,
+						sessionTicket:          true,
+						signatureAlgorithms:    supportedSignatureAlgorithms,
+						supportedPoints:        supportedPointFormats,
+						supportedCurves:        supportedCurves,
+					},
 				},
 			},
 		})
-		b := f.raw
-		d := &defrag{}
+		b := e.raw
+		d := &handshakeDecoder{}
 		for len(b) > 0 {
 			r, next, err := parseRecord(b)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = d.parse(r.raw); err != nil {
-				t.Fatal(err)
-			}
+			d.parse(r.raw)
 			b = next
 		}
 		h := d.read()
