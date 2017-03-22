@@ -87,14 +87,3 @@ func (c *cipherSuite) prf(ver uint16, result, secret []byte, params ...[]byte) {
 var (
 	errUnsupportedKeyExchangeAlgorithm = errors.New("dtls: unsupported key exchange algorithm")
 )
-
-/*
-func cipherAES(key, iv []byte, read bool) interface{} {
-	block, _ := aes.NewCipher(key)
-	if read {
-		return cipher.NewCBCDecrypter(block, iv)
-	}
-	return cipher.NewCBCEncrypter(block, iv)
-}
-
-*/

@@ -102,16 +102,19 @@ func TestHelloVerifyRequest(t *testing.T) {
 }
 
 func TestServerKeyExchange(t *testing.T) {
-	d := &handshakeDecoder{seq: 2}
+	d := &handshakeTransport{}
+	d.in.seq = 2
 	for _, it := range []string{
 		"16feff000000000000000e00f20c00014700020000000000e60300174104cbaecd1b61e5a9480a702836f0a8a0a44f8f0c88e8009f45acfacf654d8e47fe4005cd215f9a5c38cb8ad5f5d528bea7ec2ff3f09633c57941287fee09e5effd01003738960f95e19967fbf1e36d8082ae9c8311126a0f695134feeb06ab205b34e201cf59bb07b1e57bcf809c7452f5824854c0c51a5471f93d03430bdc61a5a21b45bde88b967e22ce5549bed6bce8c3696fa5f9c7f4662eaa039cd904a6e9e6aaf4618db14b46f35057a54ec04121c5ba9b4c2d1de61d588fe2ddd04913f9f880f5fe3cebb26c49647d2a5c898fabf34edfea5c4cc9b4991c1de62be4dc3aa8",
 		"16feff000000000000000f006d0c00014700020000e60000611b89d720a8722ced8270a728a34fb49d01b3ae61fbff3e85bb6f15fb09a4d406e9146f5122d51c9beee570e999db2238c2e55df2a801f355bf73d02a1e154b2f859a3579e5a3927a16c0d0794780db346381342cc72ddb7f6ab75cff18533c9ed7",
 	} {
 		b, _ := hex.DecodeString(it)
 		r, _, _ := parseRecord(b)
-		d.parse(r.raw)
+		if err := d.parse(r.raw); err != nil {
+			t.Fatal(err)
+		}
 	}
-	h := d.read()
+	h := d.next()
 	if h == nil {
 		t.Fatal("no message")
 	}

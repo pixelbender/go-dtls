@@ -10,7 +10,8 @@ import (
 
 func NewClient(conn net.Conn, config *Config) (*Conn, error) {
 	c := newConn(conn, config)
-	h := &clientHandshake{handshakeProtocol: c.newHandshake()}
+	h := &clientHandshake{}
+	h.transport = c.transport
 	if err := h.handshake(); err != nil {
 		return nil, err
 	}
@@ -18,8 +19,7 @@ func NewClient(conn net.Conn, config *Config) (*Conn, error) {
 }
 
 type clientHandshake struct {
-	*handshakeProtocol
-	ver          uint16
+	handshakeTransport
 	suite        *cipherSuite
 	masterSecret []byte
 }
@@ -48,24 +48,22 @@ func (c *clientHandshake) handshake() (err error) {
 		ch.signatureAlgorithms = supportedSignatureAlgorithms
 	}
 	var (
+		req   *helloVerifyRequest
 		sh    *serverHello
 		skey  *serverKeyExchange
 		scert *certificate
 		creq  *certificateRequest
 	)
-	c.reset(true)
-	c.write(&handshake{typ: handshakeClientHello, message: ch})
-	if err = c.flight(func(m *handshake) (done bool, err error) {
+	c.prepare(&handshake{typ: handshakeClientHello, message: ch})
+	if err = c.roundTrip(func(m *handshake) (done bool, err error) {
 		switch m.typ {
 		case handshakeHelloVerifyRequest:
-			var r *helloVerifyRequest
-			if r, err = parseHelloVerifyRequest(m.raw); err != nil {
+			if req, err = parseHelloVerifyRequest(m.raw); err != nil {
 				break
 			}
-			// TODO: reset finished mac
-			ch.cookie = clone(r.cookie)
-			c.reset(true)
-			c.write(&handshake{typ: handshakeClientHello, message: ch})
+			ch.cookie = clone(req.cookie)
+			c.reset()
+			c.prepare(&handshake{typ: handshakeClientHello, message: ch})
 		case handshakeServerHello:
 			sh, err = parseServerHello(m.raw)
 		case handshakeCertificate:
@@ -78,7 +76,7 @@ func (c *clientHandshake) handshake() (err error) {
 			done = true
 		default:
 			c.sendAlert(alertUnexpectedMessage)
-			return false, fmt.Errorf("dtls: unexpected message: 0x%x", m.typ)
+			return false, errUnexpectedMessage
 		}
 		if err != nil {
 			c.sendAlert(alertDecodeError)
@@ -114,12 +112,8 @@ func (c *clientHandshake) handshake() (err error) {
 	}
 	// TODO: check renegotiation
 
-	c.reset(false)
-	//
-	////preMasterSecret, ckx, err := keyAgreement.generateClientKeyExchange(c.config, hs.hello, c.peerCertificates[0])
-	//
 	if creq != nil {
-		c.write(&handshake{typ: handshakeCertificate, message: &certificate{}})
+		c.prepare(&handshake{typ: handshakeCertificate, message: &certificate{}})
 		// TODO: write peer certificate chain
 	}
 
@@ -138,7 +132,7 @@ func (c *clientHandshake) handshake() (err error) {
 			c.sendAlert(alertInternalError)
 			return
 		}
-		c.write(&handshake{typ: handshakeClientKeyExchange, message: ckey})
+		c.prepare(&handshake{typ: handshakeClientKeyExchange, message: ckey})
 	case keyECDH:
 		// TODO: implement
 		c.sendAlert(alertInternalError)
@@ -148,12 +142,11 @@ func (c *clientHandshake) handshake() (err error) {
 		return errUnsupportedKeyExchangeAlgorithm
 	}
 
-	c.changeCipherSpec()
+	c.prepareRecord(&record{typ: recordChangeCipherSpec, raw: changeCipherSpec})
 
-	c.tx.epoch++
-	c.write(&handshake{typ: handshakeFinished, raw: c.finishedHash()})
+	//c.write(&handshake{typ: handshakeFinished, raw: c.finishedHash()})
 
-	c.tx.writeFlight(c.enc.raw, c.enc.rec)
+	//c.tx.writeFlight(c.enc.raw, c.enc.rec)
 	time.Sleep(time.Second)
 	/*
 		return c.flight(func(m *handshake) (done bool, err error) {
@@ -163,7 +156,7 @@ func (c *clientHandshake) handshake() (err error) {
 }
 
 func (c *clientHandshake) finishedHash() []byte {
-	return c.suite.finishedHash(c.ver, c.masterSecret, clientFinished, c.buf.Bytes())
+	return c.suite.finishedHash(c.ver, c.masterSecret, clientFinished, c.log)
 }
 
 func (c *clientHandshake) newMasterSecretRSA(ch *clientHello, sh *serverHello, pub *rsa.PublicKey) ([]byte, error) {

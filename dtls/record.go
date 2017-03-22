@@ -16,6 +16,10 @@ const (
 
 var changeCipherSpec = []byte{1}
 
+type marshaler interface {
+	marshal([]byte) []byte
+}
+
 type record struct {
 	typ        uint8
 	ver, epoch uint16
@@ -24,9 +28,10 @@ type record struct {
 	payload    marshaler
 }
 
-func parseRecord(b []byte) (*record, []byte, error) {
-	if len(b) < 13 {
-		return nil, nil, errRecordFormat
+func parseRecord(b []byte) (*record, int, error) {
+	n := len(b)
+	if n < 13 {
+		return nil, 0, errRecordFormat
 	}
 	_ = b[10]
 	r := &record{
@@ -36,9 +41,9 @@ func parseRecord(b []byte) (*record, []byte, error) {
 		seq:   int64(b[5])<<40 | int64(b[6])<<32 | int64(b[7])<<24 | int64(b[8])<<16 | int64(b[9])<<8 | int64(b[10]),
 	}
 	if r.raw, b = split2(b[11:]); r.raw == nil {
-		return nil, nil, errRecordFormat
+		return nil, 0, errRecordFormat
 	}
-	return r, b, nil
+	return r, n - len(b), nil
 }
 
 func (r *record) prepare(b []byte) []byte {
