@@ -12,9 +12,10 @@ func newConn(c net.Conn, config *Config) *Conn {
 	if config == nil {
 		config = defaultConfig
 	}
-	return &Conn{
+	conn := &Conn{
 		&transport{Conn: c, config: config},
 	}
+	return conn
 }
 
 func (c *Conn) Close() error {

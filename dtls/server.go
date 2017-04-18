@@ -1,10 +1,8 @@
 package dtls
 
 import (
-	"encoding/hex"
 	"errors"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -37,13 +35,14 @@ func NewListener(c *net.UDPConn, config *Config) *Listener {
 		accept: make(chan *conn, 16),
 		conns:  make(map[string]*conn),
 	}
-	go l.serveConn()
+	go l.servePacketConn()
 	return l
 }
 
 type Listener struct {
 	c      *net.UDPConn
 	config *Config
+
 	mu     sync.RWMutex
 	accept chan *conn
 	conns  map[string]*conn
@@ -67,14 +66,29 @@ func (l *Listener) Close() error {
 	return l.c.Close()
 }
 
-func (l *Listener) serveConn() error {
-	var (
-		m, buf []byte
-		v      [18]byte
-	)
+func (l *Listener) servePacketConn() error {
+	var m, buf []byte
+	var v [18]byte
+	getConn := func(addr *net.UDPAddr) *conn {
+		v[0], v[1] = uint8(addr.Port>>8), uint8(addr.Port)
+		id := v[:copy(v[2:], addr.IP)]
+		l.mu.RLock()
+		c := l.conns[string(id)]
+		l.mu.RUnlock()
+		if c == nil {
+			l.mu.Lock()
+			if c = l.conns[string(id)]; c == nil {
+				// TODO: generate hello verify request
+				c = newServerConn(l, addr, string(id))
+				l.conns[string(id)] = c
+			}
+			l.mu.Unlock()
+		}
+		return c
+	}
 	for {
-		if len(buf) < 4096 {
-			buf = make([]byte, 1<<20)
+		if len(buf) < maxPacketSize {
+			buf = make([]byte, maxBufferSize)
 		}
 		n, addr, err := l.c.ReadFromUDP(buf)
 		if err != nil {
@@ -84,24 +98,16 @@ func (l *Listener) serveConn() error {
 			continue
 		}
 		m, buf = buf[:n], buf[n:]
-		v[0], v[1] = uint8(addr.Port>>8), uint8(addr.Port)
-		id := v[:copy(v[2:], addr.IP)]
-		l.mu.RLock()
-		c := l.conns[string(id)]
-		l.mu.RUnlock()
-		if c == nil {
-			l.mu.Lock()
-			if c = l.conns[string(id)]; c == nil {
-				c = newServerConn(l, addr, string(id))
-				l.conns[string(id)] = c
-			}
-			l.mu.Unlock()
-		}
-		if err = c.serve(m); err != nil {
-			c.Close()
+		select {
+		case getConn(addr).in <- m:
+		default:
 		}
 	}
 }
+
+//func (l *Listener) serveConn(c *conn) error {
+//	NewServer()
+//}
 
 func (l *Listener) closeConn(id string) {
 	l.mu.Lock()
@@ -110,11 +116,10 @@ func (l *Listener) closeConn(id string) {
 }
 
 type conn struct {
-	l     *Listener
-	addr  *net.UDPAddr
-	id    string
-	serve func(b []byte) error
-	in    chan []byte
+	l    *Listener
+	addr *net.UDPAddr
+	id   string
+	in   chan []byte
 }
 
 func newServerConn(l *Listener, addr *net.UDPAddr, id string) *conn {
@@ -122,11 +127,7 @@ func newServerConn(l *Listener, addr *net.UDPAddr, id string) *conn {
 		l:    l,
 		addr: addr,
 		id:   id,
-		serve: func(b []byte) error {
-			log.Printf("Read: %s", hex.Dump(b))
-			return nil
-		},
-		in: make(chan []byte, 64),
+		in:   make(chan []byte, 256),
 	}
 }
 
@@ -167,10 +168,19 @@ func (c *conn) Close() error {
 	return nil
 }
 
+func NewServer(conn net.Conn, config *Config) (*Conn, error) {
+	c := newConn(conn, config)
+	h := &serverHandshake{}
+	h.transport = c.transport
+	if err := h.handshake(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
 type serverHandshake struct {
 	handshakeTransport
 	suite        *cipherSuite
-	masterSecret []byte
 }
 
 func (c *serverHandshake) handshake() error {

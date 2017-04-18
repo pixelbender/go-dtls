@@ -6,14 +6,16 @@ import (
 	"errors"
 	"io"
 	"time"
+	"fmt"
 )
 
 var defaultConfig = &Config{
-	Rand: rand.Reader,
-	Time: time.Now,
-	MTU:  1400,
-	RetransmissionTimeout: 500 * time.Millisecond,
-	ReadTimeout:           15 * time.Second,
+	Rand:                     rand.Reader,
+	Time:                     time.Now,
+	MTU:                      1400,
+	MinRetransmissionTimeout: 100 * time.Millisecond,
+	MaxRetransmissionTimeout: time.Second,
+	ReadTimeout:              5 * time.Second,
 	CipherSuites: []uint16{
 		TLS_RSA_WITH_AES_128_CBC_SHA,
 		//tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
@@ -32,7 +34,7 @@ var defaultConfig = &Config{
 		//tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
 	},
 	MinVersion: VersionDTLS10,
-	MaxVersion: VersionDTLS12,
+	MaxVersion: VersionDTLS10,
 }
 
 var (
@@ -43,19 +45,21 @@ var (
 )
 
 type Config struct {
-	Rand                   io.Reader
-	Time                   func() time.Time
-	MTU                    int
-	RetransmissionTimeout  time.Duration
-	ReadTimeout            time.Duration
-	RootCAs                *x509.CertPool
-	ServerName             string
-	CipherSuites           []uint16
-	SRTPProtectionProfiles []uint16
-	MinVersion             uint16
-	MaxVersion             uint16
-	InsecureSkipVerify     bool
-	Logf                   func(format string, args ...interface{})
+	Rand                     io.Reader
+	Time                     func() time.Time
+	MTU                      int
+	MinRetransmissionTimeout time.Duration
+	MaxRetransmissionTimeout time.Duration
+	ReadTimeout              time.Duration
+	RootCAs                  *x509.CertPool
+	ServerName               string
+	CipherSuites             []uint16
+	SRTPProtectionProfiles   []uint16
+	MinVersion               uint16
+	MaxVersion               uint16
+	InsecureSkipVerify       bool
+	Logf                     func(format string, args ...interface{})
+	KeyLogWriter             io.Writer
 }
 
 func (c *Config) Clone() *Config {
@@ -95,15 +99,10 @@ func (c *Config) getRetransmissionTimeout() time.Time {
 }
 
 func (c *Config) getVersion(ver uint16) (uint16, error) {
-	switch ver {
-	case VersionDTLS10:
-		if c.MinVersion == VersionDTLS10 {
-			return ver, nil
-		}
-	case VersionDTLS12:
-		return ver, nil
+	if c.MaxVersion == VersionDTLS10 && ver == VersionDTLS12 {
+		return 0, errUnsupportedProtocolVersion
 	}
-	return 0, errUnsupportedProtocolVersion
+	return ver, nil
 }
 
 func (c *Config) getCipherSuite(suites ...uint16) (*cipherSuite, error) {
@@ -150,6 +149,14 @@ func (c *Config) verifyCertificate(certs ...*x509.Certificate) error {
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (c *Config) writeKeyLog(random, master []byte) error {
+	if c.KeyLogWriter != nil {
+		_, err := fmt.Fprintf(c.KeyLogWriter, "CLIENT_RANDOM %x %x\n", random, master)
+		return err
 	}
 	return nil
 }

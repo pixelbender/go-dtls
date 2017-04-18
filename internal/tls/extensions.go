@@ -1,12 +1,4 @@
-package dtls
-
-import (
-	"crypto/elliptic"
-	"crypto/sha1"
-	"crypto/sha256"
-	"crypto/sha512"
-	"hash"
-)
+package tls
 
 const (
 	extRenegotiationInfo    uint16 = 0xff01
@@ -16,20 +8,12 @@ const (
 	extUseSRTP              uint16 = 0x000e
 	extSupportedPoints      uint16 = 0x000b
 	extSupportedCurves      uint16 = 0x000a
-	extHeartbeat  uint16 = 0x000f
-)
-
-const (
-	SRTP_AES128_CM_HMAC_SHA1_80 = 0x0001
-	SRTP_AES128_CM_HMAC_SHA1_32 = 0x0002
-	SRTP_NULL_HMAC_SHA1_80      = 0x0005
-	SRTP_NULL_HMAC_SHA1_32      = 0x0006
+	extHeartbeat            uint16 = 0x000f
 )
 
 const (
 	signRSA    uint8 = 1
 	signECDSA  uint8 = 3
-	signRSAPSS uint8 = 8
 )
 
 const (
@@ -39,31 +23,8 @@ const (
 	hashSHA512 uint8 = 6
 )
 
-func newHash(hash uint8) hash.Hash {
-	switch hash {
-	case hashSHA1:
-		return sha1.New()
-	case hashSHA256:
-		return sha256.New()
-	case hashSHA384:
-		return sha512.New384()
-	case hashSHA512:
-		return sha512.New()
-	}
-	return nil
-}
-
 type signatureAlgorithm struct {
 	hash, sign uint8
-}
-
-var supportedSignatureAlgorithms = []signatureAlgorithm{
-	{hashSHA256, signRSA},
-	{hashSHA256, signECDSA},
-	{hashSHA384, signRSA},
-	{hashSHA384, signECDSA},
-	{hashSHA1, signRSA},
-	{hashSHA1, signECDSA},
 }
 
 const (
@@ -73,36 +34,12 @@ const (
 	ecdhx25519 uint16 = 29
 )
 
-var supportedCurves = []uint16{
-	secp256r1,
-	secp384r1,
-	secp521r1,
-	ecdhx25519,
-}
-
-func getCurve(v uint16) elliptic.Curve {
-	switch v {
-	case secp256r1:
-		return elliptic.P256()
-	case secp384r1:
-		return elliptic.P384()
-	case secp521r1:
-		return elliptic.P521()
-	default:
-		return nil
-	}
-}
-
 const (
 	pointUncompressed uint8 = 0
 )
 
-var supportedPointFormats = []uint8{
-	pointUncompressed,
-}
-
 const (
-	heartbeatPeerAllowed = 1
+	heartbeatPeerAllowed    = 1
 	heartbeatPeerNotAllowed = 2
 )
 
@@ -116,71 +53,7 @@ type extensions struct {
 	signatureAlgorithms     []signatureAlgorithm
 	supportedPoints         []uint8
 	supportedCurves         []uint16
-	heartbeatMode uint8
-}
-
-func parseExtensions(b []byte) (*extensions, error) {
-	var v, r []byte
-	e := &extensions{}
-
-	for len(b) > 3 {
-		_ = b[3]
-		typ := uint16(b[0])<<8 | uint16(b[1])
-		if v, b = split2(b[2:]); v == nil {
-			return nil, errHandshakeFormat
-		}
-		switch typ {
-		case extRenegotiationInfo:
-			e.renegotiationSupported = true
-			if e.renegotiationInfo, r = split(v); r == nil {
-				return nil, errHandshakeFormat
-			}
-		case extExtendedMasterSecret:
-			e.extendedMasterSecret = true
-		case extSessionTicket:
-			e.sessionTicket = true
-		case extSignatureAlgorithms:
-			if v, _ = split2(v); v == nil {
-				return nil, errHandshakeFormat
-			}
-			e.signatureAlgorithms = make([]signatureAlgorithm, len(v)>>1)
-			for i := range e.signatureAlgorithms {
-				_ = v[1]
-				e.signatureAlgorithms[i], v = signatureAlgorithm{v[0], v[1]}, v[2:]
-			}
-		case extUseSRTP:
-			if v, r = split2(v); v == nil {
-				return nil, errHandshakeFormat
-			}
-			e.srtpProtectionProfiles = make([]uint16, len(v)>>1)
-			for i := range e.srtpProtectionProfiles {
-				_ = v[1]
-				e.srtpProtectionProfiles[i], v = uint16(v[0])|uint16(v[1]), v[2:]
-			}
-			if e.srtpMasterKeyIdentifier, r = split(r); r == nil {
-				return nil, errHandshakeFormat
-			}
-		case extSupportedPoints:
-			if e.supportedPoints, r = split(v); r == nil {
-				return nil, errHandshakeFormat
-			}
-		case extSupportedCurves:
-			if v, _ = split2(v); v == nil {
-				return nil, errHandshakeFormat
-			}
-			e.supportedCurves = make([]uint16, len(v)>>1)
-			for i := range e.supportedCurves {
-				_ = v[1]
-				e.supportedCurves[i], v = uint16(v[0])|uint16(v[1]), v[2:]
-			}
-		case extHeartbeat:
-			if len(v) != 1 {
-				return nil, errHandshakeFormat
-			}
-			e.heartbeatMode = v[0]
-		}
-	}
-	return e, nil
+	heartbeatMode           uint8
 }
 
 func (e *extensions) marshal(b []byte) []byte {
@@ -248,4 +121,68 @@ func (e *extensions) marshal(b []byte) []byte {
 		v[0], v[1], v[2], v[3], v[4] = 0, uint8(extHeartbeat), 0, 1, e.heartbeatMode
 	}
 	return b
+}
+
+func (e *extensions) unmarshal(b []byte) bool {
+	var v, r []byte
+
+	for len(b) > 3 {
+		_ = b[3]
+		typ := uint16(b[0])<<8 | uint16(b[1])
+		if v, b = split2(b[2:]); v == nil {
+			return false
+		}
+		switch typ {
+		case extRenegotiationInfo:
+			e.renegotiationSupported = true
+			if e.renegotiationInfo, r = split(v); r == nil {
+				return false
+			}
+		case extExtendedMasterSecret:
+			e.extendedMasterSecret = true
+		case extSessionTicket:
+			e.sessionTicket = true
+		case extSignatureAlgorithms:
+			if v, _ = split2(v); v == nil {
+				return false
+			}
+			e.signatureAlgorithms = make([]signatureAlgorithm, len(v)>>1)
+			for i := range e.signatureAlgorithms {
+				_ = v[1]
+				e.signatureAlgorithms[i], v = signatureAlgorithm{v[0], v[1]}, v[2:]
+			}
+		case extUseSRTP:
+			if v, r = split2(v); v == nil {
+				return false
+			}
+			e.srtpProtectionProfiles = make([]uint16, len(v)>>1)
+			for i := range e.srtpProtectionProfiles {
+				_ = v[1]
+				e.srtpProtectionProfiles[i], v = uint16(v[0])|uint16(v[1]), v[2:]
+			}
+			if e.srtpMasterKeyIdentifier, r = split(r); r == nil {
+				return false
+			}
+		case extSupportedPoints:
+			if e.supportedPoints, r = split(v); r == nil {
+				return false
+			}
+		case extSupportedCurves:
+			if v, _ = split2(v); v == nil {
+				return false
+			}
+			e.supportedCurves = make([]uint16, len(v)>>1)
+			for i := range e.supportedCurves {
+				_ = v[1]
+				e.supportedCurves[i], v = uint16(v[0])|uint16(v[1]), v[2:]
+			}
+		case extHeartbeat:
+			if len(v) != 1 {
+				return false
+			}
+			e.heartbeatMode = v[0]
+		}
+		// FIXME: unsupported extensions...
+	}
+	return true
 }

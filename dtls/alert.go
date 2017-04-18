@@ -2,7 +2,7 @@ package dtls
 
 import (
 	"errors"
-	"fmt"
+	"strconv"
 )
 
 var (
@@ -10,37 +10,36 @@ var (
 )
 
 const (
-	levelWarning = 1
-	levelError   = 2
+	levelError = 2
 )
 
 const (
-	alertCloseNotify            uint8 = 0
-	alertUnexpectedMessage      uint8 = 10
-	alertBadRecordMAC           uint8 = 20
-	alertDecryptionFailed       uint8 = 21
-	alertRecordOverflow         uint8 = 22
-	alertDecompressionFailure   uint8 = 30
-	alertHandshakeFailure       uint8 = 40
-	alertBadCertificate         uint8 = 42
-	alertUnsupportedCertificate uint8 = 43
-	alertCertificateRevoked     uint8 = 44
-	alertCertificateExpired     uint8 = 45
-	alertCertificateUnknown     uint8 = 46
-	alertIllegalParameter       uint8 = 47
-	alertUnknownCA              uint8 = 48
-	alertAccessDenied           uint8 = 49
-	alertDecodeError            uint8 = 50
-	alertDecryptError           uint8 = 51
-	alertProtocolVersion        uint8 = 70
-	alertInsufficientSecurity   uint8 = 71
-	alertInternalError          uint8 = 80
-	alertUserCanceled           uint8 = 90
-	alertNoRenegotiation        uint8 = 100
-	alertUnsupportedExtension   uint8 = 110
+	alertCloseNotify            alert = 0
+	alertUnexpectedMessage      alert = 10
+	alertBadRecordMAC           alert = 20
+	alertDecryptionFailed       alert = 21
+	alertRecordOverflow         alert = 22
+	alertDecompressionFailure   alert = 30
+	alertHandshakeFailure       alert = 40
+	alertBadCertificate         alert = 42
+	alertUnsupportedCertificate alert = 43
+	alertCertificateRevoked     alert = 44
+	alertCertificateExpired     alert = 45
+	alertCertificateUnknown     alert = 46
+	alertIllegalParameter       alert = 47
+	alertUnknownCA              alert = 48
+	alertAccessDenied           alert = 49
+	alertDecodeError            alert = 50
+	alertDecryptError           alert = 51
+	alertProtocolVersion        alert = 70
+	alertInsufficientSecurity   alert = 71
+	alertInternalError          alert = 80
+	alertUserCanceled           alert = 90
+	alertNoRenegotiation        alert = 100
+	alertUnsupportedExtension   alert = 110
 )
 
-var alertText = map[uint8]string{
+var alertText = map[alert]string{
 	alertCloseNotify:            "close notify",
 	alertUnexpectedMessage:      "unexpected message",
 	alertBadRecordMAC:           "bad record MAC",
@@ -66,22 +65,23 @@ var alertText = map[uint8]string{
 	alertUnsupportedExtension:   "unsupported extension",
 }
 
-type alert struct {
-	level, typ uint8
+type alert uint8
+
+func (a alert) String() string {
+	if v, ok := alertText[a]; ok {
+		return "dtls: " + v
+	}
+	return "dtls: alert(" + strconv.Itoa(int(a)) + ")"
 }
 
-func parseAlert(b []byte) (*alert, error) {
+func (a alert) Error() string {
+	return a.String()
+}
+
+func parseAlert(b []byte) (uint8, alert, error) {
 	if len(b) < 2 {
-		return nil, errHandshakeFormat
+		return 0, 0, errAlertFormat
 	}
 	_ = b[1]
-	return &alert{b[0], b[1]}, nil
-}
-
-func (a *alert) Error() string {
-	v, ok := alertText[a.typ]
-	if !ok {
-		v = fmt.Sprintf("alert 0x%x", a.typ)
-	}
-	return fmt.Sprintf("dtls: ", v)
+	return b[0], alert(b[1]), nil
 }

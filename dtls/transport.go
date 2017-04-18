@@ -5,63 +5,101 @@ import (
 	"sort"
 	"sync/atomic"
 	"time"
+	"log"
+	"io"
+	"hash"
 )
 
+var (
+	maxPacketSize = 2048
+	maxBufferSize = 1048576
+)
+
+// transport implements DTLS record layer.
 type transport struct {
 	net.Conn
 	config *Config
 	ver    uint16
 	epoch  uint16
-	rx     struct {
-		seq  int64
-		mask int64
-		buf  []byte
-		pos  int
+	rx struct {
+		seq       int64
+		unprotect func(r *record, b []byte) []byte
+		mac       hash.Hash
+		mask      int64
+		buf       []byte
+		pos       int
 	}
 	tx struct {
-		seq int64
+		seq     int64
+		protect func(r *record, b []byte) []byte
+		mac     hash.Hash
 	}
 }
 
+func (t *transport) servePacket(b []byte) error {
+	return nil
+}
+
+func (t *transport) writeRecord(r ...*record) error {
+	tx := &t.tx
+	b := make([]byte, 0, 4096) // TODO: buffer pool...
+	n := int64(len(r))
+	seq := atomic.AddInt64(&tx.seq, n) - n
+	for i, it := range r {
+		it.seq = seq + int64(i)
+		b = tx.protect(it, b)
+	}
+	return nil
+}
+
+func (t *transport) nextTransport() *transport {
+	var r transport
+	r = *t
+	r.rx.buf = nil
+	return &r
+}
+
 func (t *transport) readRecord() (*record, error) {
-	b := t.rx.buf
-	if b == nil {
-		b = make([]byte, 0, 4096)
-		t.rx.buf = b
+	rx := &t.rx
+	if rx.buf == nil {
+		rx.buf = make([]byte, 0, maxPacketSize)
 	}
 	for {
-		for t.rx.pos < len(b) {
-			r, n, err := parseRecord(b[t.rx.pos:])
+		for rx.pos < len(rx.buf) {
+			r, n, err := parseRecord(rx.buf[rx.pos:])
 			if err != nil {
-				t.rx.pos = len(b)
-				return r, err
+				rx.pos = len(rx.buf)
+				return nil, err
 			}
-			t.rx.pos += n
+			rx.pos += n
 			if t.canReceive(r) {
 				return r, nil
 			}
 		}
-		n, err := t.Read(b[:cap(b)])
+		n, err := t.Read(rx.buf[:cap(rx.buf)])
 		if err != nil {
 			return nil, err
 		}
-		t.rx.buf = b[:n]
+		rx.pos, rx.buf = 0, rx.buf[:n]
 	}
 }
 
+// canReceive provides replay protection according to RFC 4347 Section 4.1.2.5.
+// Returns true only if r has same epoch, is not duplicate and lies within sliding receive window.
+// Sliding receive window size is 64.
 func (t *transport) canReceive(r *record) bool {
-	if r.epoch != t.epoch {
+	rx := &t.rx
+	if t.epoch != r.epoch {
 		return false
 	}
-	// TODO: prevent from seq corruption
-	d := r.seq - t.rx.seq
+	d := r.seq - rx.seq
 	if d > 0 {
 		if d < 64 {
-			t.rx.mask = (t.rx.mask << uint(d)) | 1
+			rx.mask = (rx.mask << uint(d)) | 1
 		} else {
-			t.rx.mask = 1
+			rx.mask = 1
 		}
-		t.rx.seq = r.seq
+		rx.seq = r.seq
 		return true
 	}
 	if d = -d; d >= 64 {
@@ -74,18 +112,65 @@ func (t *transport) canReceive(r *record) bool {
 	return false
 }
 
-func (t *transport) sendAlert(alert uint8) error {
+func (t *transport) sendAlert(a alert) error {
 	return t.writeRecord(&record{
 		typ: recordAlert,
 		ver: t.ver,
-		raw: []byte{levelError, alert},
+		raw: []byte{levelError, uint8(a)},
 	})
 }
 
-func (t *transport) writeRecord(r *record) error {
-	r.ver, r.epoch, r.seq = t.ver, t.epoch, atomic.AddInt64(&t.tx.seq, 1)-1
-	_, err := t.Write(r.marshal(nil))
+func (t *transport) writeRecord333(rec *record) error {
+	rec.ver, rec.epoch, rec.seq = t.ver, t.epoch, atomic.AddInt64(&t.tx.seq, 1)-1
+	_, err := t.Write(rec.marshal(nil))
 	return err
+}
+
+func (t *transport) Write(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	if t.codec != nil {
+		h := t.codec.enc.hash
+		h.Reset()
+		h.Write(b)
+
+		s := t.codec.enc.cipher.BlockSize()
+		iv := make([]byte, s)
+		if _, err := io.ReadFull(t.config.getRand(), iv); err != nil {
+			return 0, err
+		}
+		t.codec.enc.cipher.SetIV(iv)
+
+		b = append([]byte(nil), b...)
+		b = append(b, iv...)
+		b = append(b, h.Sum(nil)...)
+
+		over := (len(b) - 13) % s
+		l := s - over
+		for i := 0; i < l; i++ {
+			b = append(b, 0)
+		}
+
+		z := len(b) - 15
+		b[11], b[12] = uint8(z>>8), uint8(z)
+
+		l.codec.enc.cipher.CryptBlocks(b[13:], b[13:])
+		//m := mac(t.codec.enc.hash)
+	}
+	return t.Conn.Write(b)
+}
+
+func padToBlockSize(payload []byte, blockSize int) (prefix, finalBlock []byte) {
+	overrun := len(payload) % blockSize
+	paddingLen := blockSize - overrun
+	prefix = payload[:len(payload)-overrun]
+	finalBlock = make([]byte, blockSize)
+	copy(finalBlock, payload[len(payload)-overrun:])
+	for i := overrun; i < blockSize; i++ {
+		finalBlock[i] = byte(paddingLen - 1)
+	}
+	return
 }
 
 func (t *transport) writeFlight(raw []byte, rec []int) error {
@@ -93,12 +178,12 @@ func (t *transport) writeFlight(raw []byte, rec []int) error {
 	for _, to := range rec {
 		v := raw[last:to]
 		put6(v[5:], atomic.AddInt64(&t.tx.seq, 1)-1)
-		if to-sent > t.config.getMTU() {
-			if _, err := t.Write(raw[sent:last]); err != nil {
-				return err
-			}
-			sent = last
+		//if to-sent > t.config.getMTU() {
+		if _, err := t.Write(raw[sent:last]); err != nil {
+			return err
 		}
+		sent = last
+		//}
 		last = to
 	}
 	if sent == last {
@@ -119,28 +204,30 @@ type handshakeTransport struct {
 	}
 	in struct {
 		seq   int
-		queue [16]*handshakeQueue
+		queue [16]*handshakeFragmentQueue
 	}
 }
 
 func (t *handshakeTransport) reset() {
 	if t.log != nil {
 		t.log = t.log[:0]
+		log.Print("log: clear")
 	}
 	t.clearFlight()
 }
 
-func (t *handshakeTransport) roundTrip(handle func(h *handshake) (bool, error)) error {
+func (t *handshakeTransport) roundTrip(handle func(h *handshake) error) error {
 	defer t.clearFlight()
 	if err := t.sendFlight(); err != nil {
 		return err
 	}
 	var (
 		start = time.Now()
-		rto   = t.config.RetransmissionTimeout
+		rto   = t.config.MinRetransmissionTimeout
+		max   = t.config.MaxRetransmissionTimeout
 	)
 	defer t.SetReadDeadline(time.Time{})
-	for {
+	for len(t.out.rec) > 0 {
 		d := t.config.ReadTimeout - time.Since(start)
 		if d < 0 {
 			return errHandshakeTimeout
@@ -155,16 +242,17 @@ func (t *handshakeTransport) roundTrip(handle func(h *handshake) (bool, error)) 
 				Timeout() bool
 			}); ok && e.Timeout() {
 				rto <<= 1
-				if err = t.sendFlight(); err != nil {
+				if rto > max {
+					rto = max
+				}
+				if err = t.sendFlight(); err == nil {
 					continue
 				}
 			}
 			return err
 		}
-		if done, err := handle(h); err != nil {
+		if err := handle(h); err != nil {
 			return err
-		} else if done {
-			break
 		}
 	}
 	return nil
@@ -185,14 +273,15 @@ func (t *handshakeTransport) prepareRecord(r *record) {
 	mtu := t.config.getMTU()
 	n, max := len(v), mtu-len(b)+t.out.last
 	if n > max {
-		t.out.last, max = len(b), mtu
+		t.out.last, max = pos, mtu
 	}
 	if r.typ == recordHandshake {
 		put3(v[14:], n-25)
+		log.Printf("log[%d] += out[%d]", len(t.log), len(v[25:]))
 		t.log = append(t.log, v[25:]...)
 	}
 	if n <= max || r.typ != recordHandshake {
-		t.out.rec = append(t.out.rec, t.out.last+n)
+		t.out.rec = append(t.out.rec, pos+n)
 		t.out.raw = b
 		return
 	}
@@ -256,7 +345,7 @@ func (t *handshakeTransport) parse(b []byte) error {
 		if h.len < 0 || h.len > 0x1000 {
 			return errHandshakeMessageTooBig
 		}
-		q = &handshakeQueue{
+		q = &handshakeFragmentQueue{
 			raw: make([]byte, h.len),
 		}
 		t.in.queue[i] = q
@@ -296,6 +385,7 @@ func (t *handshakeTransport) readHandshake() (*handshake, error) {
 	for {
 		h := t.next()
 		if h != nil {
+			log.Printf("log[%d] += in[%d]", len(t.log), len(h.raw))
 			t.log = append(t.log, h.raw...)
 			h.raw = clone(h.raw)
 			return h, nil
@@ -306,11 +396,11 @@ func (t *handshakeTransport) readHandshake() (*handshake, error) {
 		}
 		switch r.typ {
 		case recordAlert:
-			a, err := parseAlert(r.raw)
+			level, a, err := parseAlert(r.raw)
 			if err != nil {
 				return nil, err
 			}
-			if a.level == levelError {
+			if level == levelError {
 				return nil, a
 			}
 		case recordHandshake:
@@ -323,21 +413,21 @@ func (t *handshakeTransport) readHandshake() (*handshake, error) {
 	}
 }
 
-type handshakeQueue struct {
+type handshakeFragmentQueue struct {
 	h   []*handshake
 	raw []byte
 }
 
-func (q *handshakeQueue) Len() int {
+func (q *handshakeFragmentQueue) Len() int {
 	return len(q.h)
 }
 
-func (q *handshakeQueue) Swap(i, j int) {
+func (q *handshakeFragmentQueue) Swap(i, j int) {
 	r := q.h
 	r[i], r[j] = r[j], r[i]
 }
 
-func (q *handshakeQueue) Less(i, j int) bool {
+func (q *handshakeFragmentQueue) Less(i, j int) bool {
 	a, b := q.h[i], q.h[j]
 	return a.off < b.off
 }

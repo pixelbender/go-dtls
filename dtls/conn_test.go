@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"net"
 	"testing"
+	"io"
+	"os"
 )
 
 func _TestClientWithOpenSSL(t *testing.T) {
@@ -18,6 +20,7 @@ func _TestClientWithOpenSSL(t *testing.T) {
 	}
 	config := defaultConfig.Clone()
 	config.InsecureSkipVerify = true
+	config.KeyLogWriter = io.Writer(os.Stdout)
 	c, err := NewClient(conn, config)
 	if err != nil {
 		t.Fatal(err)

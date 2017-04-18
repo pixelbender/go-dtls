@@ -22,7 +22,14 @@ var (
 	errHandshakeTimeout            = errors.New("dtls: handshake timeout")
 
 	errUnexpectedMessage = errors.New("dtls: unexpected message")
+	errHandshakeFailure  = errors.New("dtls: handshake failure")
 )
+
+type errFormat string
+
+func (e errFormat) Error() string {
+	return "dtls: " + string(e) + " format error"
+}
 
 const (
 	handshakeClientHello        uint8 = 1
@@ -35,11 +42,6 @@ const (
 	handshakeCertificateVerify  uint8 = 15
 	handshakeClientKeyExchange  uint8 = 16
 	handshakeFinished           uint8 = 20
-)
-
-const (
-	keyRSA  = 1
-	keyECDH = 2
 )
 
 const (

@@ -14,6 +14,7 @@ Work in progress, stay tuned...
 - [ ] Retransmission
 - [ ] ...
 - [ ] Session Tickets
+- No compression methods
 
 ## Installation
 
